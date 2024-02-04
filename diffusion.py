@@ -31,8 +31,8 @@ class SinusoidalTimeEmbeddings(nn.Module):
 
 
 class CSPDiffusion(nn.Module):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, device) -> None:
+        super().__init__()
 
         self.decoder = CSPNet()
         self.beta_scheduler = BetaScheduler(1000, 'cosine')
@@ -41,7 +41,7 @@ class CSPDiffusion(nn.Module):
         self.time_embedding = SinusoidalTimeEmbeddings(self.time_dim)
         self.keep_lattice = 1 < 1e-5
         self.keep_coords = 1 < 1e-5
-        self.device = 'cpu'
+        self.device = device
 
     def forward(self, batch):
         times = self.beta_scheduler.uniform_sample_t(batch.batch_size, self.device)

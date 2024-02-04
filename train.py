@@ -17,7 +17,9 @@ test_batch_size = 128
 train_loader = DataLoader(trainset, shuffle=True, batch_size=train_batch_size)
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 
-model = CSPDiffusion()
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+model = CSPDiffusion(device).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 sheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, factor=0.6, patience=30, min_lr=1e-4
@@ -37,6 +39,7 @@ for epoch in trange(num_epochs):
     res_log = {}
     model.train(True)
     for batch in tqdm(train_loader):
+        batch = batch.to(device)
         loss = model.training_step(batch, 0)
         train_loss.append(loss.data.to('cpu').numpy())
 
@@ -51,8 +54,8 @@ for epoch in trange(num_epochs):
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
-            i = 0
             for batch in tqdm(test_loader):
+                batch = batch.to(device)
                 outputs, _ = model.sample(batch)
 
                 frac_coords.append(outputs['frac_coords'].detach().cpu())
@@ -60,10 +63,6 @@ for epoch in trange(num_epochs):
                 atom_types.append(outputs['atom_types'].detach().cpu())
                 lattices.append(outputs['lattices'].detach().cpu())
                 input_data_list = input_data_list + batch.to_data_list()
-
-                i += 1
-                if i == 1:
-                    break
 
             frac_coords = torch.cat(frac_coords, dim=0)
             num_atoms = torch.cat(num_atoms, dim=0)
