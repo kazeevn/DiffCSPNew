@@ -12,7 +12,7 @@ trainset = CrystDataset('train.csv', 'train')
 testset = CrystDataset('test.csv', 'test')
 
 train_batch_size = 256
-test_batch_size = 128
+test_batch_size = 256
 
 train_loader = DataLoader(trainset, shuffle=True, batch_size=train_batch_size)
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
@@ -50,7 +50,7 @@ for epoch in trange(num_epochs):
     sheduler.step(np.mean(train_loss))
     res_log['train_loss'] = np.mean(train_loss)
 
-    if not epoch % 20:
+    if not epoch % 50:
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
