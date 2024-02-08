@@ -12,7 +12,7 @@ trainset = CrystDataset('train.csv', 'train')
 testset = CrystDataset('test.csv', 'test')
 
 train_batch_size = 256
-test_batch_size = 128
+test_batch_size = 256
 
 train_loader = DataLoader(trainset, shuffle=True, batch_size=train_batch_size)
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
@@ -84,8 +84,8 @@ for epoch in trange(num_epochs):
                 input_list.append(
                     Structure(
                         lattice=Lattice.from_parameters(*(struct.lengths.tolist()[0] + struct.angles.tolist()[0])),
-                        species=struct.atom_types.numpy(),
-                        coords=struct.frac_coords.numpy(),
+                        species=struct.atom_types.to('cpu'),
+                        coords=struct.frac_coords.to('cpu'),
                         coords_are_cartesian=False
                     )
                 )
