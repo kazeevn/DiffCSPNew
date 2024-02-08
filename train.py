@@ -84,8 +84,8 @@ for epoch in trange(num_epochs):
                 input_list.append(
                     Structure(
                         lattice=Lattice.from_parameters(*(struct.lengths.tolist()[0] + struct.angles.tolist()[0])),
-                        species=struct.atom_types,
-                        coords=struct.frac_coords,
+                        species=struct.atom_types.numpy(),
+                        coords=struct.frac_coords.numpy(),
                         coords_are_cartesian=False
                     )
                 )
