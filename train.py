@@ -91,7 +91,7 @@ for epoch in trange(num_epochs):
                 )
 
             match_rate = np.array([
-                d[0] if (d := matcher.get_rms_dist(s1, s2)) is not None else None for s1, s2 in zip(input_list, preds_list)
+                d[0] if (d := matcher.get_rms_dist(s1, s2)) is not None else None for s1, s2 in tqdm(zip(input_list, preds_list))
             ])
             res_log['match_rate'] = np.sum(match_rate is not None) / len(match_rate)
 
