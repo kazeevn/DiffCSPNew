@@ -18,6 +18,8 @@ module load Python/Anaconda_v11.2020
 
 conda activate csp_env
 
-srun --ntasks=1 --gpus=1 --exclusive -N1 -n1 --cpus-per-task=4 WANDB__SERVICE_WAIT=300 python train.py
+export WANDB__SERVICE_WAIT=300
+
+srun --ntasks=1 --gpus=1 --exclusive -N1 -n1 --cpus-per-task=4 python train.py
 
 wait
