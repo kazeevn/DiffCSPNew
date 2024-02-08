@@ -12,7 +12,7 @@ trainset = CrystDataset('train.csv', 'train')
 testset = CrystDataset('test.csv', 'test')
 
 train_batch_size = 256
-test_batch_size = 256
+test_batch_size = 128
 
 train_loader = DataLoader(trainset, shuffle=True, batch_size=train_batch_size)
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
