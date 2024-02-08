@@ -15,7 +15,7 @@
 
 
 module load Python/Anaconda_v11.2020
-
+eval "$(conda shell.bash hook)"
 conda activate csp_env
 
 export WANDB__SERVICE_WAIT=300
