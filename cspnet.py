@@ -93,13 +93,13 @@ class CSPNet(nn.Module):
 
     def __init__(
             self,
-            hidden_dim=128,
+            hidden_dim=512,  # !!!
             latent_dim=256,
             num_layers=6,
             max_atoms=100,
             act_fn='silu',
             dis_emb='sin',
-            num_freqs=128,
+            num_freqs=128,  # !!!
             edge_style='fc',
             cutoff=7.0,
             max_neighbors=20,

@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1  ## number of tasks (analyses) to run
 #SBATCH --cpus-per-task=4  ## the number of threads allocated to each task
 #SBATCH --gpus-per-task=1  ## the number of threads allocated to each task
-#SBATCH --time=0-10:01:00  ## time for analysis (day-hour:min:sec)
+#SBATCH --time=0-20:01:00  ## time for analysis (day-hour:min:sec)
 ## SBATCH --mail-user ipromanov@edu.hse.ru  ## your email address
 #SBATCH --export=ALL
 ## SBATCH --mail-type BEGIN  ## slurm will email you when your job starts
