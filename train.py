@@ -50,7 +50,7 @@ for epoch in trange(num_epochs):
     sheduler.step(np.mean(train_loss))
     res_log['train_loss'] = np.mean(train_loss)
 
-    if not epoch % 50:
+    if not epoch % 100:
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
@@ -94,5 +94,7 @@ for epoch in trange(num_epochs):
                 d[0] if (d := matcher.get_rms_dist(s1, s2)) is not None else None for s1, s2 in tqdm(zip(input_list, preds_list))
             ])
             res_log['match_rate'] = np.sum(match_rate != None) / len(match_rate)
+
+            torch.save(model.state_dict(), 'test_ckpt.pt')
 
     wandb.log(res_log)
