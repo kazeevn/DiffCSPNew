@@ -15,13 +15,13 @@ model = CSPDiffusion(device)
 model.load_state_dict(torch.load('test_ckpt.pt'))
 model.to(device)
 
-with open('CaTiO3.cif') as f:
-    struct_cif = f.read()
-
-d = {'cif': [struct_cif for _ in range(10000)], 'material_id': ['mp-4019' for _ in range(10000)]}
-df = pd.DataFrame(data=d)
-
-df.to_csv('predict.csv')
+# with open('CaTiO3.cif') as f:
+#     struct_cif = f.read()
+#
+# d = {'cif': [struct_cif for _ in range(10000)], 'material_id': ['mp-4019' for _ in range(10000)]}
+# df = pd.DataFrame(data=d)
+#
+# df.to_csv('predict.csv')
 
 testset = CrystDataset('predict.csv', 'predict')
 
