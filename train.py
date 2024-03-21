@@ -9,7 +9,7 @@ from pymatgen.analysis.structure_matcher import StructureMatcher
 import wandb
 
 trainset = CrystDataset('train.csv', 'train_sym')
-testset = CrystDataset('test.csv', 'test')
+testset = CrystDataset('test.csv', 'test_sym')
 
 train_batch_size = 256
 test_batch_size = 256
