@@ -59,7 +59,7 @@ class CSPDiffusion(nn.Module):
         lattices = lattice_params_to_matrix_torch(batch.lengths, batch.angles)
         frac_coords = batch.frac_coords
 
-        rand_l, rand_x = torch.randn_like(lattices), torch.randn([len(batch.wp_len), 3])
+        rand_l, rand_x = torch.randn_like(lattices), torch.randn([len(batch.wp_len), 3]).to(self.device)
         rand_x = torch.bmm(batch.rotation, torch.repeat_interleave(rand_x, batch.wp_len, dim=0)[..., None]).squeeze()
 
         input_lattice = c0[:, None, None] * lattices + c1[:, None, None] * rand_l
