@@ -8,7 +8,7 @@ from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.structure_matcher import StructureMatcher
 import wandb
 
-trainset = CrystDataset('train.csv', 'train')
+trainset = CrystDataset('train.csv', 'train_sym')
 testset = CrystDataset('test.csv', 'test')
 
 train_batch_size = 256
