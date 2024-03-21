@@ -1,62 +1,61 @@
-import torch
-import pandas as pd
-from torch_geometric.data import DataLoader
-from tqdm import tqdm
-from pymatgen.core import Structure
-from pymatgen.io.cif import CifWriter
-
-from diffusion import CSPDiffusion
+from pymatgen.io.cif import CifParser
+from pyxtal import pyxtal
+from pyxtal.symmetry import Group
 from dataset import CrystDataset
+from torch_geometric.data import DataLoader
+from pymatgen.core import Structure
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+struct = CifParser('CaTiO3.cif').parse_structures()[0]
+struct_1 = Structure.from_str('''# generated using pymatgen
+data_Na3MnCoNiO6
+_symmetry_space_group_name_H-M   'P 1'
+_cell_length_a   7.97762755
+_cell_length_b   7.97762755
+_cell_length_c   5.63711369
+_cell_angle_alpha   72.48857871
+_cell_angle_beta   72.48857871
+_cell_angle_gamma   21.88936910
+_symmetry_Int_Tables_number   1
+_chemical_formula_structural   Na3MnCoNiO6
+_chemical_formula_sum   'Na3 Mn1 Co1 Ni1 O6'
+_cell_volume   127.31533261
+_cell_formula_units_Z   1
+loop_
+ _symmetry_equiv_pos_site_id
+ _symmetry_equiv_pos_as_xyz
+  1  'x, y, z'
+loop_
+ _atom_site_type_symbol
+ _atom_site_label
+ _atom_site_symmetry_multiplicity
+ _atom_site_fract_x
+ _atom_site_fract_y
+ _atom_site_fract_z
+ _atom_site_occupancy
+  Na  Na0  1  0.33348900  0.33348900  0.00178500  1
+  Na  Na1  1  0.99987700  0.99987700  0.99972500  1
+  Na  Na2  1  0.66797500  0.66797500  0.99566200  1
+  Mn  Mn3  1  0.50017700  0.50017700  0.50073300  1
+  Co  Co4  1  0.82626400  0.82626400  0.49349200  1
+  Ni  Ni5  1  0.16703600  0.16703600  0.50580000  1
+  O  O6  1  0.92768300  0.92768300  0.69008100  1
+  O  O7  1  0.58132100  0.58132100  0.69828000  1
+  O  O8  1  0.25880500  0.25880500  0.71081800  1
+  O  O9  1  0.07075400  0.07075400  0.30547000  1
+  O  O10  1  0.75122900  0.75122900  0.29142500  1
+  O  O11  1  0.41538900  0.41538900  0.30672800  1''', fmt='cif')
+c = pyxtal()
 
-model = CSPDiffusion(device)
-model.load_state_dict(torch.load('test_ckpt.pt'))
-model.to(device)
+# c.from_seed(struct_1)
+# print(c.to_pymatgen())
+# for site in c.atom_sites:
+#     print(site.wp.ops)
 
-# with open('CaTiO3.cif') as f:
-#     struct_cif = f.read()
-#
-# d = {'cif': [struct_cif for _ in range(10000)], 'material_id': ['mp-4019' for _ in range(10000)]}
-# df = pd.DataFrame(data=d)
-#
-# df.to_csv('predict.csv')
+trainset = CrystDataset('train.csv', 'train_sym')
+train_loader = DataLoader(trainset, shuffle=False, batch_size=2)
 
-testset = CrystDataset('predict.csv', 'predict')
+for batch in train_loader:
+    print(batch)
+    break
 
-test_batch_size = 200
-
-test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
-
-
-model.train(False)
-with torch.no_grad():
-    frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
-    for batch in tqdm(test_loader):
-        batch = batch.to(device)
-        outputs, _ = model.sample(batch)
-
-        frac_coords.append(outputs['frac_coords'].detach().cpu())
-        num_atoms.append(outputs['num_atoms'].detach().cpu())
-        atom_types.append(outputs['atom_types'].detach().cpu())
-        lattices.append(outputs['lattices'].detach().cpu())
-        input_data_list = input_data_list + batch.to_data_list()
-
-    frac_coords = torch.cat(frac_coords, dim=0)
-    num_atoms = torch.cat(num_atoms, dim=0)
-    atom_types = torch.cat(atom_types, dim=0)
-    lattices = torch.cat(lattices, dim=0)
-
-    preds_list = []
-    start_idx = 0
-    for i in range(len(num_atoms)):
-        cur_frac_coords = frac_coords.narrow(0, start_idx, num_atoms[i])
-        cur_atom_types = atom_types.narrow(0, start_idx, num_atoms[i])
-        preds_list.append(
-            Structure(lattice=lattices[i], species=cur_atom_types, coords=cur_frac_coords, coords_are_cartesian=False)
-        )
-        start_idx += num_atoms[i]
-
-    for struct in tqdm(preds_list):
-        CifWriter(struct).write_file('test_pred.cif', 'a')

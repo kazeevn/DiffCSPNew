@@ -59,7 +59,8 @@ class CSPDiffusion(nn.Module):
         lattices = lattice_params_to_matrix_torch(batch.lengths, batch.angles)
         frac_coords = batch.frac_coords
 
-        rand_l, rand_x = torch.randn_like(lattices), torch.randn_like(frac_coords)
+        rand_l, rand_x = torch.randn_like(lattices), torch.randn([len(batch.wp_len), 3])
+        rand_x = torch.bmm(batch.rotation, torch.repeat_interleave(rand_x, batch.wp_len)[..., None]).squeeze()
 
         input_lattice = c0[:, None, None] * lattices + c1[:, None, None] * rand_l
         sigmas_per_atom = sigmas.repeat_interleave(batch.num_atoms)[:, None]
@@ -94,7 +95,10 @@ class CSPDiffusion(nn.Module):
     def sample(self, batch, step_lr=1e-5):
         batch_size = batch.batch_size
 
-        l_T, x_T = torch.randn([batch_size, 3, 3]).to(self.device), torch.rand([batch.num_nodes, 3]).to(self.device)
+        l_T, x_T = torch.randn([batch_size, 3, 3]).to(self.device), torch.rand([len(batch.wp_len), 3])
+        x_T = torch.bmm(batch.rotation, torch.repeat_interleave(x_T, batch.wp_len)[..., None]).squeeze()
+        x_T = x_T + batch.translation
+        x_T = x_T.to(self.device)
 
         if self.keep_coords:
             x_T = batch.frac_coords
