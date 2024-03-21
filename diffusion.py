@@ -95,10 +95,9 @@ class CSPDiffusion(nn.Module):
     def sample(self, batch, step_lr=1e-5):
         batch_size = batch.batch_size
 
-        l_T, x_T = torch.randn([batch_size, 3, 3]).to(self.device), torch.rand([len(batch.wp_len), 3])
+        l_T, x_T = torch.randn([batch_size, 3, 3]).to(self.device), torch.rand([len(batch.wp_len), 3]).to(self.device)
         x_T = torch.bmm(batch.rotation, torch.repeat_interleave(x_T, batch.wp_len, dim=0)[..., None]).squeeze()
         x_T = x_T + batch.translation
-        x_T = x_T.to(self.device)
 
         if self.keep_coords:
             x_T = batch.frac_coords
