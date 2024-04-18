@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch_scatter import segment_coo, segment_csr
 from pyxtal import pyxtal
+from scipy.linalg import pinv
 
 
 CrystalNN = local_env.CrystalNN(
@@ -34,10 +35,12 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
         raise NotImplementedError
 
     rotation = []
+    inv_rotation = []
     translation = []
     wp_len = []
     for site in c.atom_sites:
         rotation.extend([op.rotation_matrix for op in site.wp.ops])
+        inv_rotation.extend([pinv(op.rotation_matrix) for op in site.wp.ops])
         translation.extend([op.translation_vector for op in site.wp.ops])
         wp_len.append(len(site.wp.ops))
 
@@ -46,6 +49,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
         raise NotImplementedError
 
     rotation = np.stack(rotation)
+    inv_rotation = np.stack(inv_rotation)
     translation = np.stack(translation)
     wp_len = np.array(wp_len)
 
@@ -69,7 +73,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     to_jimages = np.array(to_jimages)
     num_atoms = atom_types.shape[0]
 
-    return frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, num_atoms, rotation, translation, wp_len
+    return frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, num_atoms, rotation, inv_rotation, translation, wp_len
 
 
 def build_crystal(crystal_str, niggli=True, primitive=False):
