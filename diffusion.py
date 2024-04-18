@@ -162,7 +162,7 @@ class CSPDiffusion(nn.Module):
             std_x = torch.sqrt(2 * step_size)
 
             pred_l, pred_x = self.decoder(time_emb, batch.atom_types, x_t, l_t, batch.num_atoms, batch.batch)
-            scatter_idx = torch.arange(0, len(batch.wp_len)).repeat_interleave(batch.wp_len, dim=0)
+            scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
             pred_x = scatter(pred_x, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
@@ -187,7 +187,7 @@ class CSPDiffusion(nn.Module):
 
             pred_l, pred_x = self.decoder(time_emb, batch.atom_types, x_t_minus_05, l_t_minus_05, batch.num_atoms,
                                           batch.batch)
-            scatter_idx = torch.arange(0, len(batch.wp_len)).repeat_interleave(batch.wp_len, dim=0)
+            scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
             pred_x = scatter(pred_x, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
 
             pred_x = pred_x * torch.sqrt(sigma_norm)
