@@ -50,7 +50,7 @@ for epoch in trange(num_epochs):
     sheduler.step(np.mean(train_loss))
     res_log['train_loss'] = np.mean(train_loss)
 
-    if epoch and not epoch % 100:
+    if epoch and not epoch % 10:
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
