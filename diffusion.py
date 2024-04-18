@@ -63,7 +63,7 @@ class CSPDiffusion(nn.Module):
         anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
         rand_l, rand_x = torch.randn_like(lattices), torch.randn([len(batch.wp_len), 3]).to(self.device)
         rand_x = torch.bmm(batch.inv_rotation[anchor_idx], rand_x[..., None]).squeeze()
-        rand_x = rand_x.repeat_interleave(batch.wp_len)
+        rand_x = rand_x.repeat_interleave(batch.wp_len, dim=0)
         rand_x = torch.bmm(batch.rotation, rand_x[..., None]).squeeze()
 
         input_lattice = c0[:, None, None] * lattices + c1[:, None, None] * rand_l
@@ -153,7 +153,7 @@ class CSPDiffusion(nn.Module):
             anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
             rand_x = torch.randn([len(batch.wp_len), 3]).to(self.device)
             rand_x = torch.bmm(batch.inv_rotation[anchor_idx], rand_x[..., None]).squeeze()
-            rand_x = rand_x.repeat_interleave(batch.wp_len)
+            rand_x = rand_x.repeat_interleave(batch.wp_len, dim=0)
             rand_x = torch.bmm(batch.rotation, rand_x[..., None]).squeeze()
 
             step_size = step_lr * (sigma_x / self.sigma_scheduler.sigma_begin) ** 2
@@ -175,7 +175,7 @@ class CSPDiffusion(nn.Module):
             anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
             rand_x = torch.randn([len(batch.wp_len), 3]).to(self.device)
             rand_x = torch.bmm(batch.inv_rotation[anchor_idx], rand_x[..., None]).squeeze()
-            rand_x = rand_x.repeat_interleave(batch.wp_len)
+            rand_x = rand_x.repeat_interleave(batch.wp_len, dim=0)
             rand_x = torch.bmm(batch.rotation, rand_x[..., None]).squeeze()
 
             adjacent_sigma_x = self.sigma_scheduler.sigmas[t - 1]
