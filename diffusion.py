@@ -166,7 +166,6 @@ class CSPDiffusion(nn.Module):
             pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
             scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
             pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
-            pred_x_anchor = pred_x_anchor.repeat_interleave(batch.wp_len, dim=0)
 
             pred_x = torch.bmm(batch.rotation, pred_x_anchor[..., None]).squeeze()
 
@@ -194,9 +193,7 @@ class CSPDiffusion(nn.Module):
                                           batch.batch)
             pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
             scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
-            pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len,
-                                                                                                      dim=0)
-            pred_x_anchor = pred_x_anchor.repeat_interleave(batch.wp_len, dim=0)
+            pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
 
             pred_x = torch.bmm(batch.rotation, pred_x_anchor[..., None]).squeeze()
 
