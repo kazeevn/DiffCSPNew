@@ -3,6 +3,7 @@ from joblib import Parallel, delayed
 from tqdm import trange
 from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.graphs import StructureGraph
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.analysis import local_env
 import numpy as np
 import torch
@@ -20,6 +21,8 @@ crystalNN_tmp = local_env.CrystalNN(
 
 
 def build_crystal_graph(crystal, graph_method='crystalnn'):
+    spga = SpacegroupAnalyzer(crystal, symprec=0.01)
+    crystal = spga.get_refined_structure()
     c = pyxtal()
     c.from_seed(crystal)
     crystal = c.to_pymatgen()
