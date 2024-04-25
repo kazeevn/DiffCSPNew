@@ -55,8 +55,8 @@ for epoch in trange(num_epochs):
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
             for idx, batch in tqdm(enumerate(test_loader)):
-                if idx == 5:
-                    break
+                if idx != 17:
+                    continue
                 batch = batch.to(device)
                 outputs, _ = model.sample(batch)
 
