@@ -25,6 +25,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     crystal = spga.get_refined_structure()
     c = pyxtal()
     c.from_seed(crystal)
+    space_group = c.group.number
     crystal = c.to_pymatgen()
 
     if graph_method == 'crystalnn':
@@ -76,7 +77,8 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     to_jimages = np.array(to_jimages)
     num_atoms = atom_types.shape[0]
 
-    return frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, num_atoms, rotation, inv_rotation, translation, wp_len
+    return frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, \
+           num_atoms, rotation, inv_rotation, translation, wp_len, space_group
 
 
 def build_crystal(crystal_str, niggli=True, primitive=False):

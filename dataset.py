@@ -40,7 +40,7 @@ class CrystDataset(Dataset):
         data_dict = self.cached_data[index]
 
         (frac_coords, atom_types, lengths, angles, edge_indices,
-         to_jimages, num_atoms, rotation, inv_rotation, translation, wp_len) = data_dict['graph_arrays']
+         to_jimages, num_atoms, rotation, inv_rotation, translation, wp_len, space_group) = data_dict['graph_arrays']
 
         data = Data(
             frac_coords=torch.Tensor(frac_coords),
@@ -55,7 +55,8 @@ class CrystDataset(Dataset):
             rotation=torch.Tensor(rotation),
             inv_rotation=torch.Tensor(inv_rotation),
             translation=torch.Tensor(translation),
-            wp_len=torch.LongTensor(wp_len)
+            wp_len=torch.LongTensor(wp_len),
+            spacegroup=space_group,
         )
 
         return data

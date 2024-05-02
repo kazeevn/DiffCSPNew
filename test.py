@@ -45,17 +45,18 @@ loop_
   O  O9  1  0.07075400  0.07075400  0.30547000  1
   O  O10  1  0.75122900  0.75122900  0.29142500  1
   O  O11  1  0.41538900  0.41538900  0.30672800  1''', fmt='cif')
+print(struct_1.lattice)
 c = pyxtal()
 
-# c.from_seed(struct_1)
-# print(c.to_pymatgen())
+c.from_seed(struct_1)
+print(c.to_pymatgen().lattice)
 # for site in c.atom_sites:
-#     print(site.wp.ops)
+#     print(site.wp)
 
-trainset = CrystDataset('train.csv', 'train_sym')
-train_loader = DataLoader(trainset, shuffle=False, batch_size=2)
-
-for batch in train_loader:
-    print(batch)
-    break
+# trainset = CrystDataset('train.csv', 'train_sym')
+# train_loader = DataLoader(trainset, shuffle=False, batch_size=2)
+#
+# for batch in train_loader:
+#     print(batch)
+#     break
 
