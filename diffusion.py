@@ -140,7 +140,7 @@ class CSPDiffusion(nn.Module):
 
             x_t = traj[t]['frac_coords']
             l_t = traj[t]['lattices']
-            crys_fam_T = traj[t]['crys_fam']
+            crys_fam_t = traj[t]['crys_fam']
 
             # PC-sampling refers to "Score-Based Generative Modeling through Stochastic Differential Equations"
             # Origin code : https://github.com/yang-song/score_sde/blob/main/sampling.py
