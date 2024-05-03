@@ -166,6 +166,7 @@ class CSPDiffusion(nn.Module):
             pred_x = pred_x * torch.sqrt(sigma_norm)
 
             x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x
+            x_t_minus_05 = x_t_minus_05[anchor_idx]
             x_t_minus_05 = torch.bmm(batch.rotation, torch.repeat_interleave(x_t_minus_05, batch.wp_len, dim=0)[..., None]).squeeze()
             x_t_minus_05 = (x_t_minus_05 + batch.translation) % 1.
 
@@ -197,6 +198,7 @@ class CSPDiffusion(nn.Module):
             pred_x = pred_x * torch.sqrt(sigma_norm)
 
             x_t_minus_1 = x_t_minus_05 - step_size * pred_x + std_x * rand_x
+            x_t_minus_1 = x_t_minus_1[anchor_idx]
             x_t_minus_1 = torch.bmm(batch.rotation, torch.repeat_interleave(x_t_minus_1, batch.wp_len, dim=0)[..., None]).squeeze()
             x_t_minus_1 = (x_t_minus_1 + batch.translation) % 1.
 
