@@ -157,7 +157,7 @@ class CSPDiffusion(nn.Module):
             step_size = step_lr * (sigma_x / self.sigma_scheduler.sigma_begin) ** 2
             std_x = torch.sqrt(2 * step_size)
 
-            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t, crys_fam_T, batch.num_atoms, batch.batch)
+            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t, crys_fam_t, batch.num_atoms, batch.batch)
             pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
             scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
             pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
@@ -189,7 +189,7 @@ class CSPDiffusion(nn.Module):
             step_size = (sigma_x ** 2 - adjacent_sigma_x ** 2)
             std_x = torch.sqrt((adjacent_sigma_x ** 2 * (sigma_x ** 2 - adjacent_sigma_x ** 2)) / (sigma_x ** 2))
 
-            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t_minus_05, crys_fam_T, batch.num_atoms, batch.batch)
+            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t_minus_05, crys_fam_t, batch.num_atoms, batch.batch)
             pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
             scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
             pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
