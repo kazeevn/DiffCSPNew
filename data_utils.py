@@ -38,24 +38,21 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     else:
         raise NotImplementedError
 
-    rotation = []
+    operation = []
     inv_rotation = []
-    translation = []
-    wp_len = []
+    anchor_idxs = []
     for site in c.atom_sites:
-        rotation.extend([op.rotation_matrix for op in site.wp.ops])
+        anchor_idxs.extend([len(operation) for _ in site.wp.ops])
+        operation.extend([op.affine_matrix for op in site.wp.ops])
         inv_rotation.extend([pinv(op.rotation_matrix) for op in site.wp.ops])
-        translation.extend([op.translation_vector for op in site.wp.ops])
-        wp_len.append(len(site.wp.ops))
 
-    if len(rotation) != len(crystal.frac_coords):
-        print('rot', len(rotation), 'frac', len(crystal.frac_coords))
+    if len(operation) != len(crystal.frac_coords):
+        print('rot', len(operation), 'frac', len(crystal.frac_coords))
         raise NotImplementedError
 
-    rotation = np.stack(rotation)
+    operation = np.stack(operation)
     inv_rotation = np.stack(inv_rotation)
-    translation = np.stack(translation)
-    wp_len = np.array(wp_len)
+    anchor_idxs = np.array(anchor_idxs)
 
     frac_coords = crystal.frac_coords
     atom_types = crystal.atomic_numbers
@@ -78,7 +75,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     num_atoms = atom_types.shape[0]
 
     return frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, \
-           num_atoms, rotation, inv_rotation, translation, wp_len, space_group
+           num_atoms, operation, inv_rotation, anchor_idxs, space_group
 
 
 def build_crystal(crystal_str, niggli=True, primitive=False):

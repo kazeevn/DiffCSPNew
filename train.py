@@ -1,6 +1,6 @@
 from dataset import CrystDataset
 from torch_geometric.data import DataLoader
-from diffusion import CSPDiffusion
+from diffusion1 import CSPDiffusion
 import torch
 from tqdm import trange, tqdm
 import numpy as np

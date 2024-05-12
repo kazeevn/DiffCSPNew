@@ -40,7 +40,7 @@ class CrystDataset(Dataset):
         data_dict = self.cached_data[index]
 
         (frac_coords, atom_types, lengths, angles, edge_indices,
-         to_jimages, num_atoms, rotation, inv_rotation, translation, wp_len, space_group) = data_dict['graph_arrays']
+         to_jimages, num_atoms, operation, inv_rotation, anchor_idxs, space_group) = data_dict['graph_arrays']
 
         data = Data(
             frac_coords=torch.Tensor(frac_coords),
@@ -52,10 +52,9 @@ class CrystDataset(Dataset):
             num_atoms=num_atoms,
             num_bonds=edge_indices.shape[0],
             num_nodes=num_atoms,  # special attribute used for batching in pytorch geometric
-            rotation=torch.Tensor(rotation),
-            inv_rotation=torch.Tensor(inv_rotation),
-            translation=torch.Tensor(translation),
-            wp_len=torch.LongTensor(wp_len),
+            ops=torch.Tensor(operation),
+            ops_inv=torch.Tensor(inv_rotation),
+            anchor_index=torch.LongTensor(anchor_idxs),
             spacegroup=space_group,
         )
 

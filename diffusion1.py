@@ -45,7 +45,8 @@ class CSPDiffusion(nn.Module):
         self.crystal_family = CrystalFamily()
 
     def forward(self, batch):
-        times = self.beta_scheduler.uniform_sample_t(batch.batch_size, self.device)
+        batch_size = batch.batch_size
+        times = self.beta_scheduler.uniform_sample_t(batch_size, self.device)
         time_emb = self.time_embedding(times)
 
         alphas_cumprod = self.beta_scheduler.alphas_cumprod[times]
@@ -61,16 +62,14 @@ class CSPDiffusion(nn.Module):
         lattices = self.crystal_family.de_so3(lattices)
         frac_coords = batch.frac_coords
 
-        anchor_idx = torch.zeros_like(batch.wp_len)
-        anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
-
-        rand_x_anchor = torch.randn([len(batch.wp_len), 3]).to(self.device)
-        rand_x_anchor = torch.bmm(batch.inv_rotation[anchor_idx], rand_x_anchor[..., None]).squeeze()
-        rand_x_anchor = rand_x_anchor.repeat_interleave(batch.wp_len, dim=0)
-        rand_x = torch.bmm(batch.rotation, rand_x_anchor[..., None]).squeeze()
+        rand_x = torch.randn_like(frac_coords)
 
         sigmas_per_atom = sigmas.repeat_interleave(batch.num_atoms)[:, None]
         sigmas_norm_per_atom = sigmas_norm.repeat_interleave(batch.num_atoms)[:, None]
+
+        rand_x_anchor = rand_x[batch.anchor_index]
+        rand_x_anchor = (batch.ops_inv[batch.anchor_index] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
+        rand_x = (batch.ops[:, :3, :3] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
         input_frac_coords = (frac_coords + sigmas_per_atom * rand_x) % 1.
 
         ori_crys_fam = self.crystal_family.m2v(lattices)
@@ -80,18 +79,22 @@ class CSPDiffusion(nn.Module):
         input_crys_fam = c0[:, None] * ori_crys_fam + c1[:, None] * rand_crys_fam
         input_crys_fam = self.crystal_family.proj_k_to_spacegroup(input_crys_fam, batch.spacegroup)
 
-        pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, input_frac_coords, input_crys_fam, batch.num_atoms, batch.batch)
-        pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
+        pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, input_frac_coords, input_crys_fam,
+                                             batch.num_atoms, batch.batch)
         pred_crys_fam = self.crystal_family.proj_k_to_spacegroup(pred_crys_fam, batch.spacegroup)
 
-        tar_x_anchor = d_log_p_wrapped_normal(sigmas_per_atom * rand_x_anchor, sigmas_per_atom) / torch.sqrt(sigmas_norm_per_atom)
+        pred_x_proj = torch.einsum('bij, bj-> bi', batch.ops_inv, pred_x)
+
+        tar_x_anchor = d_log_p_wrapped_normal(sigmas_per_atom * rand_x_anchor, sigmas_per_atom) / torch.sqrt(
+            sigmas_norm_per_atom)
 
         loss_lattice = F.mse_loss(pred_crys_fam, rand_crys_fam)
+
         loss_coord = F.mse_loss(pred_x_proj, tar_x_anchor)
 
         loss = (
-                1 * loss_lattice +
-                1 * loss_coord)
+                1. * loss_lattice +
+                1. * loss_coord)
 
         return {
             'loss': loss,
@@ -103,15 +106,18 @@ class CSPDiffusion(nn.Module):
     def sample(self, batch, step_lr=1e-5):
         batch_size = batch.batch_size
 
-        x_T = torch.rand([len(batch.wp_len), 3]).to(self.device)
-        x_T = torch.bmm(batch.rotation, torch.repeat_interleave(x_T, batch.wp_len, dim=0)[..., None]).squeeze()
-        x_T = (x_T + batch.translation) % 1
-
+        x_T = torch.rand([batch.num_nodes, 3]).to(self.device)
         crys_fam_T = torch.randn([batch_size, 6]).to(self.device)
         crys_fam_T = self.crystal_family.proj_k_to_spacegroup(crys_fam_T, batch.spacegroup)
+
+        time_start = self.beta_scheduler.timesteps - 1
+
         l_T = self.crystal_family.v2m(crys_fam_T)
 
-        time_start = self.beta_scheduler.timesteps
+        x_T_all = torch.cat([x_T[batch.anchor_index], torch.ones(batch.ops.size(0), 1).to(x_T.device)],
+                            dim=-1).unsqueeze(-1)  # N * 4 * 1
+
+        x_T = (batch.ops @ x_T_all).squeeze(-1)[:, :3] % 1.  # N * 3
 
         traj = {time_start: {
             'num_atoms': batch.num_atoms,
@@ -122,7 +128,6 @@ class CSPDiffusion(nn.Module):
         }}
 
         for t in tqdm(range(time_start, 0, -1)):
-
             times = torch.full((batch_size,), t, device=self.device)
 
             time_emb = self.time_embedding(times)
@@ -141,76 +146,78 @@ class CSPDiffusion(nn.Module):
             l_t = traj[t]['lattices']
             crys_fam_t = traj[t]['crys_fam']
 
-            # PC-sampling refers to "Score-Based Generative Modeling through Stochastic Differential Equations"
-            # Origin code : https://github.com/yang-song/score_sde/blob/main/sampling.py
-
             # Corrector
 
-            anchor_idx = torch.zeros_like(batch.wp_len)
-            anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
+            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
 
-            rand_x_anchor = torch.randn([len(batch.wp_len), 3]).to(self.device)
-            rand_x_anchor = torch.bmm(batch.inv_rotation[anchor_idx], rand_x_anchor[..., None]).squeeze()
-            rand_x_anchor = rand_x_anchor.repeat_interleave(batch.wp_len, dim=0)
-            rand_x = torch.bmm(batch.rotation, rand_x_anchor[..., None]).squeeze()
-
-            step_size = step_lr * (sigma_x / self.sigma_scheduler.sigma_begin) ** 2
+            step_size = step_lr / (sigma_norm * (self.sigma_scheduler.sigma_begin) ** 2)
             std_x = torch.sqrt(2 * step_size)
 
-            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t, crys_fam_t, batch.num_atoms, batch.batch)
-            pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
-            scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
-            pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
+            rand_x_anchor = rand_x[batch.anchor_index]
+            rand_x_anchor = (batch.ops_inv[batch.anchor_index] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
+            rand_x = (batch.ops[:, :3, :3] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
 
-            pred_x = torch.bmm(batch.rotation, pred_x_anchor[..., None]).squeeze()
+            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t, crys_fam_t, batch.num_atoms,
+                                                 batch.batch)
+
             pred_x = pred_x * torch.sqrt(sigma_norm)
 
+            pred_x_proj = torch.einsum('bij, bj-> bi', batch.ops_inv, pred_x)
+            pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce='mean')[batch.anchor_index]
+
+            pred_x = (batch.ops[:, :3, :3] @ pred_x_anchor.unsqueeze(-1)).squeeze(-1)
+
             x_t_minus_05 = x_t - step_size * pred_x + std_x * rand_x
-            x_t_minus_05 = x_t_minus_05[anchor_idx]
-            x_t_minus_05 = torch.bmm(batch.rotation, torch.repeat_interleave(x_t_minus_05, batch.wp_len, dim=0)[..., None]).squeeze()
-            x_t_minus_05 = (x_t_minus_05 + batch.translation) % 1.
 
             crys_fam_t_minus_05 = crys_fam_t
+
+            frac_coords_all = torch.cat(
+                [x_t_minus_05[batch.anchor_index], torch.ones(batch.ops.size(0), 1).to(x_t_minus_05.device)],
+                dim=-1).unsqueeze(-1)  # N * 4 * 1
+
+            x_t_minus_05 = (batch.ops @ frac_coords_all).squeeze(-1)[:, :3] % 1.  # N * 3
 
             # Predictor
 
             rand_crys_fam = torch.randn_like(crys_fam_T)
             rand_crys_fam = self.crystal_family.proj_k_to_spacegroup(rand_crys_fam, batch.spacegroup)
             ori_crys_fam = crys_fam_t
-
-            anchor_idx = torch.zeros_like(batch.wp_len)
-            anchor_idx[1:] = torch.cumsum(batch.wp_len, 0)[:-1]
-
-            rand_x_anchor = torch.randn([len(batch.wp_len), 3]).to(self.device)
-            rand_x_anchor = torch.bmm(batch.inv_rotation[anchor_idx], rand_x_anchor[..., None]).squeeze()
-            rand_x_anchor = rand_x_anchor.repeat_interleave(batch.wp_len, dim=0)
-            rand_x = torch.bmm(batch.rotation, rand_x_anchor[..., None]).squeeze()
+            rand_x = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
 
             adjacent_sigma_x = self.sigma_scheduler.sigmas[t - 1]
             step_size = (sigma_x ** 2 - adjacent_sigma_x ** 2)
             std_x = torch.sqrt((adjacent_sigma_x ** 2 * (sigma_x ** 2 - adjacent_sigma_x ** 2)) / (sigma_x ** 2))
 
-            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t_minus_05, crys_fam_t, batch.num_atoms, batch.batch)
-            pred_x_proj = torch.einsum('bij, bj-> bi', batch.inv_rotation, pred_x)
-            scatter_idx = torch.arange(0, len(batch.wp_len), device=self.device).repeat_interleave(batch.wp_len, dim=0)
-            pred_x_anchor = scatter(pred_x_proj, scatter_idx, dim=0, reduce='mean').repeat_interleave(batch.wp_len, dim=0)
+            rand_x_anchor = rand_x[batch.anchor_index]
+            rand_x_anchor = (batch.ops_inv[batch.anchor_index] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
+            rand_x = (batch.ops[:, :3, :3] @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
 
-            pred_x = torch.bmm(batch.rotation, pred_x_anchor[..., None]).squeeze()
+            pred_crys_fam, pred_x = self.decoder(time_emb, batch.atom_types, x_t_minus_05, crys_fam_t, batch.num_atoms,
+                                                 batch.batch)
+
             pred_x = pred_x * torch.sqrt(sigma_norm)
-
-            x_t_minus_1 = x_t_minus_05 - step_size * pred_x + std_x * rand_x
-            x_t_minus_1 = x_t_minus_1[anchor_idx]
-            x_t_minus_1 = torch.bmm(batch.rotation, torch.repeat_interleave(x_t_minus_1, batch.wp_len, dim=0)[..., None]).squeeze()
-            x_t_minus_1 = (x_t_minus_1 + batch.translation) % 1.
 
             crys_fam_t_minus_1 = c0 * (ori_crys_fam - c1 * pred_crys_fam) + sigmas * rand_crys_fam
             crys_fam_t_minus_1 = self.crystal_family.proj_k_to_spacegroup(crys_fam_t_minus_1, batch.spacegroup)
+
+            pred_x_proj = torch.einsum('bij, bj-> bi', batch.ops_inv, pred_x)
+            pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce='mean')[batch.anchor_index]
+            pred_x = (batch.ops[:, :3, :3] @ pred_x_anchor.unsqueeze(-1)).squeeze(-1)
+
+            x_t_minus_1 = x_t_minus_05 - step_size * pred_x + std_x * rand_x
+
             l_t_minus_1 = self.crystal_family.v2m(crys_fam_t_minus_1)
+
+            frac_coords_all = torch.cat(
+                [x_t_minus_1[batch.anchor_index], torch.ones(batch.ops.size(0), 1).to(x_t_minus_1.device)],
+                dim=-1).unsqueeze(-1)  # N * 4 * 1
+
+            x_t_minus_1 = (batch.ops @ frac_coords_all).squeeze(-1)[:, :3] % 1.  # N * 3
 
             traj[t - 1] = {
                 'num_atoms': batch.num_atoms,
                 'atom_types': batch.atom_types,
-                'frac_coords': x_t_minus_1,
+                'frac_coords': x_t_minus_1 % 1.,
                 'lattices': l_t_minus_1,
                 'crys_fam': crys_fam_t_minus_1
             }
@@ -231,39 +238,7 @@ class CSPDiffusion(nn.Module):
         loss_coord = output_dict['loss_coord']
         loss = output_dict['loss']
 
-        # self.log_dict(
-        #     {'train_loss': loss,
-        #      'lattice_loss': loss_lattice,
-        #      'coord_loss': loss_coord},
-        #     on_step=True,
-        #     on_epoch=True,
-        #     prog_bar=True,
-        # )
-
         if loss.isnan():
             return None
 
         return loss
-
-    def test_step(self, batch, batch_idx: int) -> torch.Tensor:
-        output_dict = self(batch)
-
-        log_dict, loss = self.compute_stats(output_dict, prefix='test')
-
-        self.log_dict(
-            log_dict,
-        )
-        return loss
-
-    def compute_stats(self, output_dict, prefix):
-        loss_lattice = output_dict['loss_lattice']
-        loss_coord = output_dict['loss_coord']
-        loss = output_dict['loss']
-
-        log_dict = {
-            f'{prefix}_loss': loss,
-            f'{prefix}_lattice_loss': loss_lattice,
-            f'{prefix}_coord_loss': loss_coord
-        }
-
-        return log_dict, loss
