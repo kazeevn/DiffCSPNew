@@ -7,6 +7,17 @@ import numpy as np
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
 
+def structure_validity(crystal, cutoff=0.5):
+    dist_mat = crystal.distance_matrix
+    # Pad diagonal with a large number
+    dist_mat = dist_mat + np.diag(
+        np.ones(dist_mat.shape[0]) * (cutoff + 10.))
+    if dist_mat.min() < cutoff or crystal.volume < 0.1:
+        return False
+    else:
+        return True
+
+
 matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
 testset = CrystDataset('test.csv', 'test_sym')
@@ -53,7 +64,15 @@ for i in tqdm(range(len(num_atoms))):
     )
     start_idx += num_atoms[i]
 
+def process_pair(s1, s2):
+    if not structure_validity(s1) or not structure_validity(s2):
+        return None
+    d = matcher.get_rms_dist(s1, s2)
+    if d is None:
+        return None
+    return d
+
 match_rate = np.array([
-    d[0] if (d := matcher.get_rms_dist(s1, s2)) is not None else None for s1, s2 in tqdm(zip(input_list, preds_list))
+    process_pair(s1, s2) for s1, s2 in tqdm(zip(input_list, preds_list))
 ])
 print(np.sum(match_rate != None) / len(match_rate))
