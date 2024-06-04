@@ -183,12 +183,12 @@ for batch in tqdm(test_loader):
 input_list = []
 for struct in input_data_list:
     input_list.append(
-        Structure(
-            lattice=Lattice.from_parameters(*(struct.lengths.tolist()[0] + struct.angles.tolist()[0])),
-            species=struct.atom_types.to('cpu'),
-            coords=struct.frac_coords.to('cpu'),
-            coords_are_cartesian=False
-        )
+        Crystal({
+            'frac_coords': struct.frac_coords,
+            'atom_types': struct.atom_types,
+            'lengths': struct.lengths,
+            'angles': struct.angles,
+        })
     )
 
 data = torch.load("eval_diff.pt", map_location='cpu')
@@ -250,7 +250,7 @@ def process_pair(s1, s2):
 
 
 match_rate = np.array([
-    process_pair(s1, s2.structure) for s1, s2 in tqdm(zip(input_list, preds_list))
+    process_pair(s1.structure, s2.structure) for s1, s2 in tqdm(zip(input_list, preds_list))
 ])
 print(np.sum(match_rate != None) / len(match_rate))
 
