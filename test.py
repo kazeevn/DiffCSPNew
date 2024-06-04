@@ -42,7 +42,9 @@ for i in tqdm(range(len(num_atoms))):
     cur_frac_coords = frac_coords.narrow(0, start_idx, num_atoms[i])
     cur_atom_types = atom_types.narrow(0, start_idx, num_atoms[i])
     cur_lengths = lengths[i]
+    print(cur_lengths)
     cur_angles = angles[i]
+    print(cur_angles)
     preds_list.append(
         Structure(
             lattice=Lattice.from_parameters(*(cur_lengths.tolist()[0] + cur_angles.tolist()[0])),
