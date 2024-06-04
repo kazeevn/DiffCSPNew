@@ -181,7 +181,7 @@ for batch in tqdm(test_loader):
     input_data_list = input_data_list + batch.to_data_list()
 
 input_list = []
-for struct in input_data_list:
+for struct in tqdm(input_data_list):
     input_list.append(
         Crystal({
             'frac_coords': struct.frac_coords,
