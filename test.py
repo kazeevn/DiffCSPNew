@@ -186,8 +186,8 @@ for struct in input_data_list:
         Crystal({
             'frac_coords': struct.frac_coords,
             'atom_types': struct.atom_types,
-            'lengths': struct.lengths,
-            'angles': struct.angles,
+            'lengths': struct.lengths[0],
+            'angles': struct.angles[0],
         })
     )
 
