@@ -64,6 +64,30 @@ for i in tqdm(range(len(num_atoms))):
     )
     start_idx += num_atoms[i]
 
+frac_coords = data['input_data_batch']['frac_coords']
+atom_types = data['input_data_batch']['atom_types']
+lengths = data['input_data_batch']['lengths']
+angles = data['input_data_batch']['angles']
+num_atoms = data['input_data_batch']['num_atoms']
+
+old_list = []
+start_idx = 0
+for i in tqdm(range(len(num_atoms))):
+    cur_frac_coords = frac_coords.narrow(0, start_idx, num_atoms[i])
+    cur_atom_types = atom_types.narrow(0, start_idx, num_atoms[i])
+    cur_lengths = lengths[i]
+    cur_angles = angles[i]
+    old_list.append(
+        Structure(
+            lattice=Lattice.from_parameters(*(cur_lengths.tolist() + cur_angles.tolist())),
+            species=cur_atom_types,
+            coords=cur_frac_coords,
+            coords_are_cartesian=False
+        )
+    )
+    start_idx += num_atoms[i]
+
+
 def process_pair(s1, s2):
     if not structure_validity(s1) or not structure_validity(s2):
         return None
@@ -72,7 +96,13 @@ def process_pair(s1, s2):
         return None
     return d[0]
 
+
 match_rate = np.array([
     process_pair(s1, s2) for s1, s2 in tqdm(zip(input_list, preds_list))
+])
+print(np.sum(match_rate != None) / len(match_rate))
+
+match_rate = np.array([
+    process_pair(s1, s2) for s1, s2 in tqdm(zip(old_list, preds_list))
 ])
 print(np.sum(match_rate != None) / len(match_rate))
