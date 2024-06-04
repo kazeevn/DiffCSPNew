@@ -150,7 +150,7 @@ class Crystal(object):
 
 matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
-testset = CrystDataset('../DiffCSPNew/test.py', 'test_sym')
+testset = CrystDataset('/home/ipromanov/DiffCSPNew/test.py', 'test_sym')
 test_batch_size = 256
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 
@@ -169,7 +169,7 @@ for struct in input_data_list:
         )
     )
 
-data = torch.load("../DiffCSPNew/eval_diff.pt", map_location='cpu')
+data = torch.load("/home/ipromanov/DiffCSPNew/eval_diff.pt", map_location='cpu')
 
 frac_coords = data['frac_coords'][0]
 atom_types = data['atom_types'][0]
