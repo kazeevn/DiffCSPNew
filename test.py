@@ -172,7 +172,7 @@ class Crystal(object):
 
 matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
-testset = CrystDataset('test.py', 'test_sym')
+testset = CrystDataset('test.csv', 'test_sym')
 test_batch_size = 256
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 
