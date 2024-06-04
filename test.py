@@ -15,7 +15,8 @@ from matminer.featurizers.site.fingerprint import CrystalNNFingerprint
 CompFP = ElementProperty.from_preset('magpie')
 CrystalNNFP = CrystalNNFingerprint.from_preset("ops")
 
-
+import sys
+sys.path.append('.')
 from diffcsp.common.data_utils import chemical_symbols
 
 
