@@ -67,7 +67,7 @@ for i in tqdm(range(len(num_atoms))):
 def process_pair(s1, s2):
     if not structure_validity(s1) or not structure_validity(s2):
         return None
-    d = matcher.get_rms_dist(s1, s2)
+    d = matcher.get_rms_dist(s1, s2)[0]
     if d is None:
         return None
     return d
