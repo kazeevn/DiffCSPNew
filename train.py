@@ -8,6 +8,17 @@ from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.structure_matcher import StructureMatcher
 import wandb
 
+
+def set_random_seed(seed):
+    torch.backends.cudnn.deterministic = True
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+set_random_seed(42)
+
 trainset = CrystDataset('train.csv', 'train_sym')
 testset = CrystDataset('test.csv', 'test_sym')
 
@@ -32,7 +43,7 @@ wandb.init(
     entity='ignat'
 )
 
-num_epochs = 1000
+num_epochs = 500
 
 for epoch in trange(num_epochs):
     train_loss = []
@@ -44,19 +55,19 @@ for epoch in trange(num_epochs):
         train_loss.append(loss.data.to('cpu').numpy())
 
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
         optimizer.step()
         optimizer.zero_grad()
 
     sheduler.step(np.mean(train_loss))
     res_log['train_loss'] = np.mean(train_loss)
 
-    if epoch and not epoch % 100:
+    if epoch and not epoch % 499:
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
             for idx, batch in tqdm(enumerate(test_loader)):
-                if idx > 5:
-                    break
                 batch = batch.to(device)
                 outputs, _ = model.sample(batch)
 
