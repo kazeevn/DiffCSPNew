@@ -7,6 +7,7 @@ import numpy as np
 from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.structure_matcher import StructureMatcher
 import wandb
+import random
 
 
 def set_random_seed(seed):
