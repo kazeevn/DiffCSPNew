@@ -57,7 +57,7 @@ for epoch in trange(num_epochs):
 
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+        torch.nn.utils.clip_grad_value_(model.parameters(), 0.5)
         optimizer.step()
         optimizer.zero_grad()
 
