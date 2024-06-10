@@ -39,8 +39,15 @@ class CrystDataset(Dataset):
     def __getitem__(self, index):
         data_dict = self.cached_data[index]
 
-        (frac_coords, atom_types, lengths, angles, edge_indices,
-         to_jimages, num_atoms, operation, inv_rotation, anchor_idxs, space_group) = data_dict['graph_arrays']
+        if 'spacegroup' not in data_dict:
+            (frac_coords, atom_types, lengths, angles, edge_indices,
+             to_jimages, num_atoms, operation, inv_rotation, anchor_idxs, space_group) = data_dict['graph_arrays']
+        else:
+            (frac_coords, atom_types, lengths, angles, edge_indices, to_jimages, num_atoms) = data_dict['graph_arrays']
+            space_group = torch.LongTensor([data_dict['spacegroup']])
+            operation = torch.Tensor(data_dict['wyckoff_ops'])
+            anchor_idxs = torch.LongTensor(data_dict['anchors'])
+            inv_rotation = torch.linalg.pinv(operation[:, :3, :3])
 
         data = Data(
             frac_coords=torch.Tensor(frac_coords),
