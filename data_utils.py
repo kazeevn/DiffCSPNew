@@ -26,7 +26,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     c = pyxtal()
     c.from_seed(crystal)
     space_group = c.group.number
-    crystal = c.to_pymatgen()
+    crystal = c.to_pymatgen(resort=False)
 
     if graph_method == 'crystalnn':
         try:
