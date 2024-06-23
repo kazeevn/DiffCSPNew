@@ -18,7 +18,7 @@ def set_random_seed(seed):
     random.seed(seed)
 
 
-set_random_seed(42)
+set_random_seed(17)
 
 trainset = CrystDataset('train.csv', 'train_sym')
 testset = CrystDataset('test.csv', 'test_sym')
