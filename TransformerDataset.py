@@ -94,7 +94,7 @@ def preprocess(input_file, niggli, primitive, graph_method):
         niggli,
         primitive,
         graph_method,
-    ) for idx in trange(100))  #len(data)))  # trange(100))
+    ) for idx in trange(1000))  #len(data)))  # trange(100))
 
     return results
 

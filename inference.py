@@ -58,6 +58,6 @@ with torch.no_grad():
         )
         start_idx += num_atoms[i]
 
-    with open('result.json') as f:
+    with open('result.json', 'w+') as f:
         pred_list = [s.as_dict() for s in preds_list]
         json.dump(pred_list, f)
