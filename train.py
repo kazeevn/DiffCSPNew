@@ -44,7 +44,7 @@ wandb.init(
     entity='ignat'
 )
 
-num_epochs = 500
+num_epochs = 600
 
 for epoch in trange(num_epochs):
     train_loss = []
@@ -57,7 +57,7 @@ for epoch in trange(num_epochs):
 
         loss.backward()
 
-        torch.nn.utils.clip_grad_value_(model.parameters(), 0.5)
+        torch.nn.utils.clip_grad_value_(model.parameters(), 0.4)
         optimizer.step()
         optimizer.zero_grad()
 
