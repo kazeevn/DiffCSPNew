@@ -20,11 +20,12 @@ crystalNN_tmp = local_env.CrystalNN(
 )
 
 
-def build_crystal_graph(crystal, graph_method='crystalnn'):
-    spga = SpacegroupAnalyzer(crystal, symprec=0.01)
-    crystal = spga.get_refined_structure()
+def build_crystal_graph(crystal, graph_method='crystalnn', tol:float = 0.1):
+    # Note(kazeevn): removed to match the WyckoffTransformer flow
+    # spga = SpacegroupAnalyzer(crystal, symprec=0.1)
+    # crystal = spga.get_refined_structure()
     c = pyxtal()
-    c.from_seed(crystal)
+    c.from_seed(crystal, tol=tol)
     space_group = c.group.number
     crystal = c.to_pymatgen(resort=False)
 
