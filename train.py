@@ -40,8 +40,7 @@ sheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
 wandb.init(
-    project="diff_csp",
-    entity='ignat'
+    project="diff_csp++"
 )
 
 num_epochs = 600
