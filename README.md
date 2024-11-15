@@ -3,6 +3,6 @@
 2. [Install poetry](https://python-poetry.org/docs/)
 2. Run `poetry install`
 ## Train on MP-20
-`python train.py`
-## Generate structures for Wyckoff representation ==
-`python inference.py`
+`poetry run python train.py`
+## Generate structures for Wyckoff representations
+`poetry run python inference.py`
