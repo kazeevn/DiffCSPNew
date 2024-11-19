@@ -1,2 +1,4 @@
 new_crystals
 wandb
+.env
+__pycache__
