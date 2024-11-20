@@ -1,17 +1,20 @@
-import torch
-import pandas as pd
-from torch.utils.data import Dataset
+import json
+from pathlib import Path
 import os
+from torch.utils.data import Dataset
+import gzip
+import logging
 from torch_geometric.data import Data
 from joblib import Parallel, delayed
 from tqdm import trange
-import json
+import torch
 from pyxtal import pyxtal
 from pymatgen.analysis.graphs import StructureGraph
 from pymatgen.analysis import local_env
 from scipy.linalg import pinv
 import numpy as np
 
+logger = logging.getLogger(__file__)
 
 CrystalNN = local_env.CrystalNN(
     distance_cutoffs=None, x_diff_weight=-1, porous_adjustment=False
@@ -23,15 +26,15 @@ crystalNN_tmp = local_env.CrystalNN(
 
 def build_crystal_graph(crystal, graph_method='crystalnn'):
     c = pyxtal()
-    c.from_random(**crystal)
+    c.from_random(**crystal, max_count=30)
     space_group = c.group.number
     crystal = c.to_pymatgen(resort=False)
 
     if graph_method == 'crystalnn':
         try:
-            crystal_graph = StructureGraph.with_local_env_strategy(crystal, CrystalNN)
+            crystal_graph = StructureGraph.from_local_env_strategy(crystal, CrystalNN)
         except Exception as _:
-            crystal_graph = StructureGraph.with_local_env_strategy(crystal, crystalNN_tmp)
+            crystal_graph = StructureGraph.from_local_env_strategy(crystal, crystalNN_tmp)
     elif graph_method == 'none':
         pass
     else:
@@ -79,41 +82,55 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
 
 def process_one(row, niggli, primitive, graph_method):
     result_dict = {}
-    graph_arrays = build_crystal_graph(row, graph_method)
-    result_dict.update({
-        'graph_arrays': graph_arrays
-    })
-    return result_dict
+    try:
+        graph_arrays = build_crystal_graph(row, graph_method)
+        result_dict.update({
+            'graph_arrays': graph_arrays
+        })
+        return result_dict
+    except (RuntimeError, TypeError) as e:
+        logger.warning("Error processing %s: %s", row, e)
+        return None
 
 
-def preprocess(input_file, niggli, primitive, graph_method):
-    with open(input_file) as f:
-        data = json.load(f)
+def preprocess(
+    input_file: Path,
+    niggli,
+    primitive,
+    graph_method,
+    structure_count:int = 1000):
+    if input_file.suffix == '.json':
+        with open(input_file, 'rt', encoding="ascii") as f:
+            data = json.load(f)
+    elif input_file.suffixes == ['.json', '.gz']:
+        with gzip.open(input_file, 'rt', encoding="ascii") as f:
+            data = json.load(f)
+    else:
+        raise ValueError(f"Unknown file type: {input_file}")
     results = Parallel(n_jobs=-1)(delayed(process_one)(
         data[idx],
         niggli,
         primitive,
         graph_method,
-    ) for idx in trange(1000))  #len(data)))  # trange(100))
-
-    return results
+    ) for idx in trange(structure_count))
+    return [r for r in results if r is not None]
 
 
 class TransformerDataset(Dataset):
     def __init__(self, path, mode):
         super().__init__()
-        self.path = path
-        self.df = pd.read_csv(self.path)
+        self.path = Path(path)
+        self.cache_path = self.path.parent / 'cache' / self.path.stem / f"{mode}.pth"
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.niggli = True
         self.primitive = False
         self.graph_method = 'crystalnn'
-
-        self.preprocess(f"{mode}.pth")
+        self.preprocess(self.cache_path)
 
     def preprocess(self, save_path):
-        print(f'preprocessing {self.path}')
+        print(f'Preprocessing {self.path}')
         if os.path.exists(save_path):
-            self.cached_data = torch.load(save_path)
+            self.cached_data = torch.load(save_path, weights_only=False)
         else:
             cached_data = preprocess(
                 self.path,
@@ -123,7 +140,7 @@ class TransformerDataset(Dataset):
             )
             torch.save(cached_data, save_path)
             self.cached_data = cached_data
-        print('done')
+        print('Done')
 
     def __len__(self) -> int:
         return len(self.cached_data)

@@ -2,3 +2,6 @@ new_crystals
 wandb
 .env
 __pycache__
+*.pth
+cache
+*.json.gz

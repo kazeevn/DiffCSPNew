@@ -1,13 +1,15 @@
+import argparse
+from pathlib import Path
 import json
-from TransformerDataset import TransformerDataset
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from diffusion1 import CSPDiffusion
 import torch
+torch.set_float32_matmul_precision('high')
 from tqdm import tqdm
 import numpy as np
 import random
 from pymatgen.core import Structure
-
+from TransformerDataset import TransformerDataset
 
 def set_random_seed(seed):
     torch.backends.cudnn.deterministic = True
@@ -16,11 +18,15 @@ def set_random_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+parser = argparse.ArgumentParser("Produce structures from pyXtal Wyckoff representations")
+parser.add_argument("wyckoff_file", type=Path, help="Path to the Wyckoff file")
+parser.add_argument("--seed", type=int, default=17, help="Random seed")
+args = parser.parse_args()
 
-set_random_seed(17)
+set_random_seed(args.seed)
 
-testset = TransformerDataset('WyckoffTransformer_mp_20.json', 'transformer')
-
+testset = TransformerDataset(args.wyckoff_file, 'transformer')
+print(f"Number of structures: {len(testset)}")
 test_batch_size = 256
 
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
@@ -28,7 +34,7 @@ test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 model = CSPDiffusion(device).to(device)
-model.load_state_dict(torch.load('test_ckpt.pt'))
+model.load_state_dict(torch.load('test_ckpt.pt', weights_only=True))
 
 model.train(False)
 with torch.no_grad():
@@ -57,7 +63,7 @@ with torch.no_grad():
             Structure(lattice=lattices[i], species=cur_atom_types, coords=cur_frac_coords, coords_are_cartesian=False)
         )
         start_idx += num_atoms[i]
-
-    with open('result.json', 'w+') as f:
-        pred_list = [s.as_dict() for s in preds_list]
+    
+    pred_list = [s.as_dict() for s in preds_list]
+    with open(str(args.wyckoff_file.stem)+'_structures.json', 'wt', encoding="ascii") as f:    
         json.dump(pred_list, f)
