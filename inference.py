@@ -78,6 +78,7 @@ def main():
     output_file_name = output_file_name.with_suffix('.diffcsp-pp.json.gz')
     with gzip.open(output_file_name, 'wt', encoding="ascii") as f:
         json.dump(pred_list, f)
+    print(f"Wrote structures to {str(output_file_name)}")
 
 
 if __name__ == '__main__':
