@@ -27,7 +27,7 @@ set_random_seed(args.seed)
 
 testset = TransformerDataset(args.wyckoff_file, 'transformer')
 print(f"Number of structures: {len(testset)}")
-test_batch_size = 256
+test_batch_size = 512
 
 test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 
