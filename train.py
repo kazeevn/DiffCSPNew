@@ -1,6 +1,4 @@
-from dataset import CrystDataset
 from torch_geometric.data import DataLoader
-from diffusion1 import CSPDiffusion
 import torch
 from tqdm import trange, tqdm
 import numpy as np
@@ -8,6 +6,9 @@ from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.structure_matcher import StructureMatcher
 import wandb
 import random
+
+from dataset import CrystDataset
+from diffusion1 import CSPDiffusion
 
 
 def set_random_seed(seed):
