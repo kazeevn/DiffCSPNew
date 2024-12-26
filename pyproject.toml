@@ -65,7 +65,7 @@ uncertainties = "3.1.7"
 urllib3 = "1.26.13"
 wandb = "^0.16.2"
 torch-geometric = "^2.6.0"
-pyxtal = "^1.0.3"
+pyxtal = "^1.0.6"
 torch = {path = "/mnt/hdd/torch_wheels/torch-2.6.0a0+git3cbf0c0-cp312-cp312-linux_x86_64.whl"}
 pytorch-triton = {path = "/mnt/hdd/torch_wheels/pytorch_triton-3.1.0+cf34004b8a-cp312-cp312-linux_x86_64.whl"}
 torch-scatter = {path = "/mnt/hdd/torch_wheels/torch_scatter-2.1.2-cp312-cp312-linux_x86_64.whl"}

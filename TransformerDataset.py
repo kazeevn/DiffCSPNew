@@ -117,7 +117,7 @@ def preprocess(
 
 
 class TransformerDataset(Dataset):
-    def __init__(self, path, mode):
+    def __init__(self, path, mode, structure_count=1000):
         super().__init__()
         self.path = Path(path)
         self.cache_path = self.path.parent / 'cache' / self.path.stem / f"{mode}.pth"
@@ -125,6 +125,7 @@ class TransformerDataset(Dataset):
         self.niggli = True
         self.primitive = False
         self.graph_method = 'crystalnn'
+        self.structure_count = structure_count
         self.preprocess(self.cache_path)
 
     def preprocess(self, save_path):
@@ -137,6 +138,7 @@ class TransformerDataset(Dataset):
                 niggli=self.niggli,
                 primitive=self.primitive,
                 graph_method=self.graph_method,
+                structure_count=self.structure_count
             )
             torch.save(cached_data, save_path)
             self.cached_data = cached_data

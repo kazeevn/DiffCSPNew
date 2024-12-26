@@ -1,7 +1,6 @@
-import torch
-import pandas as pd
-from torch.utils.data import Dataset
 import os
+import torch
+from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
 from data_utils import preprocess
@@ -11,17 +10,15 @@ class CrystDataset(Dataset):
     def __init__(self, path, mode):
         super().__init__()
         self.path = path
-        self.df = pd.read_csv(self.path)
         self.niggli = True
         self.primitive = False
         self.graph_method = 'crystalnn'
-
         self.preprocess(f"{mode}.pth")
 
     def preprocess(self, save_path):
         print(f'preprocessing {self.path}')
         if os.path.exists(save_path):
-            self.cached_data = torch.load(save_path)
+            self.cached_data = torch.load(save_path, weights_only=True)
         else:
             cached_data = preprocess(
                 self.path,

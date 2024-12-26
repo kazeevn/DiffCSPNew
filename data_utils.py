@@ -1,9 +1,9 @@
+import warnings
 import pandas as pd
 from joblib import Parallel, delayed
 from tqdm import trange
 from pymatgen.core import Structure, Lattice
 from pymatgen.analysis.graphs import StructureGraph
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.analysis import local_env
 import numpy as np
 import torch
@@ -31,9 +31,9 @@ def build_crystal_graph(crystal, graph_method='crystalnn', tol:float = 0.1):
 
     if graph_method == 'crystalnn':
         try:
-            crystal_graph = StructureGraph.with_local_env_strategy(crystal, CrystalNN)
+            crystal_graph = StructureGraph.from_local_env_strategy(crystal, CrystalNN)
         except Exception as _:
-            crystal_graph = StructureGraph.with_local_env_strategy(crystal, crystalNN_tmp)
+            crystal_graph = StructureGraph.from_local_env_strategy(crystal, crystalNN_tmp)
     elif graph_method == 'none':
         pass
     else:
@@ -100,7 +100,15 @@ def build_crystal(crystal_str, niggli=True, primitive=False):
 
 def process_one(row, niggli, primitive, graph_method):
     crystal_str = row['cif']
-    crystal = build_crystal(crystal_str, niggli=niggli, primitive=primitive)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Issues encountered while parsing CIF: \d+"
+                " fractional coordinates rounded to ideal"
+                " values to avoid issues with finite precision.",
+            category=UserWarning,
+            module="pymatgen.io.cif")
+        crystal = build_crystal(crystal_str, niggli=niggli, primitive=primitive)
     result_dict = {}
     graph_arrays = build_crystal_graph(crystal, graph_method)
     result_dict.update({
@@ -113,14 +121,13 @@ def process_one(row, niggli, primitive, graph_method):
 
 def preprocess(input_file, niggli, primitive, graph_method):
     df = pd.read_csv(input_file)
-
+    print("Suppressed CIF rounding warnings.")
     results = Parallel(n_jobs=-1)(delayed(process_one)(
         df.iloc[idx],
         niggli,
         primitive,
         graph_method,
-    ) for idx in trange(len(df)))  # trange(100))
-
+    ) for idx in trange(len(df)))
     return results
 
 

@@ -32,6 +32,7 @@ test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 model = CSPDiffusion(device).to(device)
+model = torch.compile(model, fullgraph=True)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 sheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, factor=0.6, patience=30, min_lr=1e-4
