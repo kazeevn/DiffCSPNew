@@ -5,3 +5,9 @@ __pycache__
 *.pth
 cache
 *.json.gz
+poetry.lock
+result.json
+test_ckpt.pt
+test_ckpt.pt.bak
+test_pilot_ckpt.pt
+WyckoffTransformer_mp_20.json
