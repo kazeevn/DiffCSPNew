@@ -32,8 +32,8 @@ test_loader = DataLoader(testset, shuffle=False, batch_size=test_batch_size)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-model = CSPDiffusion(device).to(device)
-model = torch.compile(model, fullgraph=True)
+raw_model = CSPDiffusion(device).to(device)
+model = torch.compile(raw_model, fullgraph=True)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 sheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, factor=0.6, patience=30, min_lr=1e-4
@@ -45,7 +45,7 @@ wandb.init(
     project="diff_csp++"
 )
 
-num_epochs = 600
+num_epochs = 500
 
 for epoch in trange(num_epochs):
     train_loss = []
@@ -54,18 +54,18 @@ for epoch in trange(num_epochs):
     for batch in tqdm(train_loader):
         batch = batch.to(device)
         loss = model.training_step(batch, 0)
-        train_loss.append(loss.data.to('cpu').numpy())
+        train_loss.append(loss.data.detach().to('cpu').numpy())
 
         loss.backward()
 
         torch.nn.utils.clip_grad_value_(model.parameters(), 0.4)
         optimizer.step()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
     sheduler.step(np.mean(train_loss))
     res_log['train_loss'] = np.mean(train_loss)
 
-    if epoch and not epoch % 499:
+    if epoch and not epoch % num_epochs - 1:
         model.train(False)
         with torch.no_grad():
             frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
@@ -99,8 +99,8 @@ for epoch in trange(num_epochs):
                 input_list.append(
                     Structure(
                         lattice=Lattice.from_parameters(*(struct.lengths.tolist()[0] + struct.angles.tolist()[0])),
-                        species=struct.atom_types.to('cpu'),
-                        coords=struct.frac_coords.to('cpu'),
+                        species=struct.atom_types.detach().to('cpu'),
+                        coords=struct.frac_coords.detach().to('cpu'),
                         coords_are_cartesian=False
                     )
                 )
@@ -110,6 +110,6 @@ for epoch in trange(num_epochs):
             ])
             res_log['match_rate'] = np.sum(match_rate != None) / len(match_rate)
 
-            torch.save(model.state_dict(), 'test_ckpt.pt')
+            torch.save(raw_model.state_dict(), 'test_ckpt.pt')
 
     wandb.log(res_log)
