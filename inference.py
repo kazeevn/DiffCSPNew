@@ -25,7 +25,8 @@ def main():
     parser = argparse.ArgumentParser("Produce structures from pyXtal Wyckoff representations")
     parser.add_argument("wyckoff_file", type=Path, help="Path to the Wyckoff file")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size")
-    parser.add_argument("--device", type=torch.device, default='cuda', help="Device to use")
+    parser.add_argument("--device", type=torch.device,
+                        default='cuda' if torch.cuda.is_available() else 'cpu', help="Device to use")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--n-structures", type=int, default=1100, help="Number of structures to produce")
     args = parser.parse_args()
@@ -36,8 +37,6 @@ def main():
     print(f"Number of structures: {len(testset)}")
 
     test_loader = DataLoader(testset, shuffle=False, batch_size=args.batch_size)
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     model = CSPDiffusion(device).to(device)
     model = torch.compile(model, fullgraph=True)
