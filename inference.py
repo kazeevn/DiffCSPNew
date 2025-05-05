@@ -38,14 +38,14 @@ def main():
 
     test_loader = DataLoader(testset, shuffle=False, batch_size=args.batch_size)
 
-    model = CSPDiffusion(device).to(device)
+    model = CSPDiffusion(args.device).to(args.device)
     model = torch.compile(model, fullgraph=True)
     model.load_state_dict(torch.load('test_ckpt.pt', weights_only=True))
     model.eval()
 
     frac_coords, num_atoms, atom_types, lattices, input_data_list = [], [], [], [], []
     for batch in tqdm(test_loader):
-        batch = batch.to(device)
+        batch = batch.to(args.device)
         outputs, _ = model.sample(batch)
 
         frac_coords.append(outputs['frac_coords'].detach().cpu())
