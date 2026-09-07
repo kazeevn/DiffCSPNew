@@ -28,7 +28,7 @@ def logm(mat: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
         mat_safe = torch.where(invalid_mask.unsqueeze(-1).unsqueeze(-1), identity, mat_safe)
 
     dev = mat_safe.device
-    if dev.type == "cuda":
+    if dev.type == "cuda" and not torch.cuda.has_magma:
         eigenvalues, eigenvectors = linalg.eig(mat_safe.cpu())
         eigenvalues = eigenvalues.to(dev)
         eigenvectors = eigenvectors.to(dev)
@@ -82,7 +82,7 @@ def sqrtm(mat: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
         sqrt_mat = torch.einsum("bij,bj,bjk->bik", evecs, evals_sqrt, evecs.transpose(-1, -2))
     else:
         dev = mat_safe.device
-        if dev.type == "cuda":
+        if dev.type == "cuda" and not torch.cuda.has_magma:
             eigenvalues, eigenvectors = linalg.eig(mat_safe.cpu())
             eigenvalues = eigenvalues.to(dev)
             eigenvectors = eigenvectors.to(dev)
