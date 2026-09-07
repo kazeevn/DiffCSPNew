@@ -64,9 +64,9 @@ def train(
     is_ddp = world_size > 1
 
     if is_ddp:
-        dist.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)
         dev = torch.device(f"cuda:{local_rank}")
+        dist.init_process_group(backend="nccl", device_id=dev)
     else:
         dev = torch.device(device)
 
