@@ -27,7 +27,13 @@ def logm(mat: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
         identity = torch.eye(3, dtype=mat.dtype, device=mat.device).unsqueeze(0)
         mat_safe = torch.where(invalid_mask.unsqueeze(-1).unsqueeze(-1), identity, mat_safe)
 
-    eigenvalues, eigenvectors = linalg.eig(mat_safe)
+    dev = mat_safe.device
+    if dev.type == "cuda":
+        eigenvalues, eigenvectors = linalg.eig(mat_safe.cpu())
+        eigenvalues = eigenvalues.to(dev)
+        eigenvectors = eigenvectors.to(dev)
+    else:
+        eigenvalues, eigenvectors = linalg.eig(mat_safe)
     # Clamp eigenvalue real parts away from zero to avoid log(-0) / log(0)
     eig_log = eigenvalues.log()
     inv_vecs = torch.linalg.pinv(eigenvectors)
@@ -75,7 +81,13 @@ def sqrtm(mat: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
         evals_sqrt = torch.clamp(evals, min=0.0).sqrt()
         sqrt_mat = torch.einsum("bij,bj,bjk->bik", evecs, evals_sqrt, evecs.transpose(-1, -2))
     else:
-        eigenvalues, eigenvectors = linalg.eig(mat_safe)
+        dev = mat_safe.device
+        if dev.type == "cuda":
+            eigenvalues, eigenvectors = linalg.eig(mat_safe.cpu())
+            eigenvalues = eigenvalues.to(dev)
+            eigenvectors = eigenvectors.to(dev)
+        else:
+            eigenvalues, eigenvectors = linalg.eig(mat_safe)
         inv_vecs = torch.linalg.pinv(eigenvectors)
         sqrt_mat = torch.einsum("bij,bj,bjk->bik", eigenvectors, eigenvalues.sqrt(), inv_vecs).real
 

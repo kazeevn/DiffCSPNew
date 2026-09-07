@@ -16,6 +16,7 @@ from diffcsp.core.scatter import scatter
 from diffcsp.data.transforms import (
     clamp_forces_and_stress,
 )
+from diffcsp.models.repulsion import compute_crystal_repulsion
 
 logger = logging.getLogger(__name__)
 
@@ -160,42 +161,64 @@ class OrbBackboneWrapper(nn.Module):
 
             for b in range(batch_size):
                 n_atoms = int(num_atoms[b].item())
-                sub_atom_types = atom_types[start_idx : start_idx + n_atoms].detach().cpu().numpy()
-                sub_cart_coords = cart_coords[start_idx : start_idx + n_atoms].detach().cpu().numpy()
-                sub_cell = lattices[b].detach().cpu().numpy()
+                sub_coords_t = cart_coords[start_idx : start_idx + n_atoms]
+                sub_lat_t = lattices[b]
+                sub_types_t = atom_types[start_idx : start_idx + n_atoms]
+
+                # Compute smooth conservative repulsive potential
+                f_rep, s_rep, e_rep = compute_crystal_repulsion(
+                    cart_coords=sub_coords_t,
+                    lattice=sub_lat_t,
+                    atom_types=sub_types_t,
+                    f_max=self.max_force,
+                    eta=0.70,
+                )
+
+                sub_atom_types = sub_types_t.detach().cpu().numpy()
+                sub_cart_coords = sub_coords_t.detach().cpu().numpy()
+                sub_cell = sub_lat_t.detach().cpu().numpy()
 
                 try:
                     atoms = Atoms(numbers=sub_atom_types, positions=sub_cart_coords, cell=sub_cell, pbc=True)
-                    graph = self.atoms_adapter.from_ase_atoms(atoms, device=self.device)
+                    try:
+                        graph = self.atoms_adapter.from_ase_atoms(atoms, device=self.device)
+                    except Exception:
+                        graph = self.atoms_adapter.from_ase_atoms(atoms, device="cpu")
+                        if str(self.device) != "cpu":
+                            graph = graph.to(self.device)
                     pred = self.orb_model.predict(graph)
 
-                    f = torch.as_tensor(pred["forces"], device=cart_coords.device, dtype=cart_coords.dtype)
-                    e = torch.as_tensor(pred["energy"], device=cart_coords.device, dtype=cart_coords.dtype)
-                    s = torch.as_tensor(
+                    f_orb = torch.as_tensor(pred["forces"], device=cart_coords.device, dtype=cart_coords.dtype)
+                    e_orb = torch.as_tensor(pred["energy"], device=cart_coords.device, dtype=cart_coords.dtype)
+                    s_orb = torch.as_tensor(
                         pred.get("stress", torch.zeros((3, 3))),
                         device=lattices.device,
                         dtype=lattices.dtype,
                     )
-                    if s.numel() == 6:
-                        s_mat = torch.tensor(
+                    if s_orb.numel() == 6:
+                        s_flat = s_orb.reshape(-1)
+                        s_orb = torch.stack(
                             [
-                                [s[0], s[5], s[4]],
-                                [s[5], s[1], s[3]],
-                                [s[4], s[3], s[2]],
-                            ],
-                            device=lattices.device,
-                            dtype=lattices.dtype,
+                                torch.stack([s_flat[0], s_flat[5], s_flat[4]]),
+                                torch.stack([s_flat[5], s_flat[1], s_flat[3]]),
+                                torch.stack([s_flat[4], s_flat[3], s_flat[2]]),
+                            ]
                         )
-                        s = s_mat
-                    elif s.numel() == 9:
-                        s = s.reshape(3, 3)
+                    elif s_orb.numel() == 9:
+                        s_orb = s_orb.reshape(3, 3)
+
+                    # Smooth transition: augment ORB with repulsive core if overlapping, exactly zero otherwise
+                    f = f_orb + f_rep
+                    s = s_orb + s_rep
+                    e = e_orb + e_rep
                 except Exception as exc:
-                    logger.warning(
-                        "ORB evaluation failed for structure %d (%s). Using fallback values.", b, exc
+                    logger.debug(
+                        "ORB evaluation failed for structure %d (%s). Using smooth conservative repulsive fallback.", b, exc
                     )
-                    f = torch.zeros((n_atoms, 3), device=cart_coords.device, dtype=cart_coords.dtype)
-                    e = torch.zeros(1, device=cart_coords.device, dtype=cart_coords.dtype)
-                    s = torch.zeros((3, 3), device=lattices.device, dtype=lattices.dtype)
+                    # When MLIP fails (unphysical overlap / cell collapse), repulsive core provides physical restoring forces
+                    f = f_rep
+                    s = s_rep
+                    e = e_rep
 
                 all_forces.append(f)
                 all_energies.append(e.unsqueeze(0) if e.dim() == 0 else e.view(1, 1))

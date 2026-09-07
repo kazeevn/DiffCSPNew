@@ -94,17 +94,20 @@ class CrystDataset(Dataset):
         primitive: bool = False,
         graph_method: str = "crystalnn",
         cache_dir: str | Path | None = None,
+        max_samples: int | None = None,
     ) -> None:
         super().__init__()
         self.path = Path(path)
         self.niggli = niggli
         self.primitive = primitive
         self.graph_method = graph_method
+        self.max_samples = max_samples
 
+        suffix = f"_{max_samples}" if max_samples is not None else ""
         if cache_dir is not None:
-            cache_path = Path(cache_dir) / f"{mode}.pth"
+            cache_path = Path(cache_dir) / f"{mode}{suffix}.pth"
         else:
-            cache_path = self.path.parent / f"{mode}.pth"
+            cache_path = self.path.parent / f"{mode}{suffix}.pth"
 
         self.cache_path = cache_path
         self.cached_data: list[dict[str, Any]] = []
@@ -114,10 +117,15 @@ class CrystDataset(Dataset):
         if self.cache_path.exists():
             logger.info("Loading cached dataset from %s", self.cache_path)
             self.cached_data = torch.load(self.cache_path, weights_only=False)
+            if self.max_samples is not None:
+                self.cached_data = self.cached_data[: self.max_samples]
             return
 
         logger.info("Preprocessing %s ...", self.path)
         df = pd.read_csv(self.path)
+        if self.max_samples is not None:
+            df = df.iloc[: self.max_samples]
+
         results = Parallel(n_jobs=-1)(
             delayed(process_one)(
                 df.iloc[idx],
