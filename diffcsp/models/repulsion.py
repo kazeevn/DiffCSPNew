@@ -33,7 +33,7 @@ def compute_crystal_repulsion(
     cart_coords: torch.Tensor,
     lattice: torch.Tensor,
     atom_types: torch.Tensor,
-    f_max: float = 20.0,
+    f_max: float = 2.0,
     eta: float = 0.70,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Computes smooth conservative repulsive forces, virial stress, and energy for a crystal.
@@ -74,7 +74,7 @@ def compute_crystal_repulsion(
     inv_lattice = torch.linalg.pinv(lattice)
     frac_coords = (cart_coords @ inv_lattice) % 1.0
 
-    vol = torch.abs(torch.linalg.det(lattice)).clamp(min=1e-3)
+    vol = torch.abs(torch.linalg.det(lattice)).clamp(min=10.0)
     forces = torch.zeros_like(cart_coords)
     stress = torch.zeros((3, 3), dtype=dtype, device=device)
     total_energy = torch.zeros(1, dtype=dtype, device=device)
@@ -122,7 +122,7 @@ def compute_crystal_repulsion(
 class SmoothRepulsivePotential(nn.Module):
     """Module wrapper for smooth conservative repulsive potential."""
 
-    def __init__(self, f_max: float = 20.0, eta: float = 0.70) -> None:
+    def __init__(self, f_max: float = 2.0, eta: float = 0.70) -> None:
         super().__init__()
         self.f_max = f_max
         self.eta = eta

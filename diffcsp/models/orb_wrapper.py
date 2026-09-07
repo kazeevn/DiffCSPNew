@@ -94,8 +94,8 @@ class OrbBackboneWrapper(nn.Module):
         use_mock: bool = False,
         node_dim: int = 256,
         graph_dim: int = 256,
-        max_force: float = 20.0,
-        max_stress: float = 50.0,
+        max_force: float = 2.0,
+        max_stress: float = 0.05,
     ) -> None:
         super().__init__()
         self.model_name = model_name
@@ -229,25 +229,23 @@ class OrbBackboneWrapper(nn.Module):
             energy = torch.cat(all_energies, dim=0)
             stress = torch.cat(all_stresses, dim=0)
 
-            node_emb = F.pad(forces, (0, self.node_dim - 3))
-            graph_emb = F.pad(stress.reshape(batch_size, 9), (0, self.graph_dim - 9))
+            clamped_forces, clamped_stress = clamp_forces_and_stress(
+                forces,
+                stress,
+                max_force=self.max_force,
+                max_stress=self.max_stress,
+            )
+
+            node_emb = F.pad(clamped_forces, (0, self.node_dim - 3))
+            graph_emb = F.pad(clamped_stress.reshape(batch_size, 9), (0, self.graph_dim - 9))
 
             out = {
                 "node_emb": node_emb,
                 "graph_emb": graph_emb,
-                "forces": forces,
-                "stress": stress,
+                "forces": clamped_forces,
+                "stress": clamped_stress,
                 "energy": energy,
             }
-
-        clamped_forces, clamped_stress = clamp_forces_and_stress(
-            out["forces"],
-            out["stress"],
-            max_force=self.max_force,
-            max_stress=self.max_stress,
-        )
-        out["forces"] = clamped_forces
-        out["stress"] = clamped_stress
         return out
 
 
