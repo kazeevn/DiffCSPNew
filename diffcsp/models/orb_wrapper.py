@@ -152,12 +152,18 @@ class OrbBackboneWrapper(nn.Module):
             out = self.mock_backbone(atom_types, cart_coords, lattices, num_atoms, node2graph)
         else:
             from ase import Atoms
+            from orb_models.common.atoms.batch.graph_batch import AtomGraphs
 
             batch_size = lattices.shape[0]
             start_idx = 0
-            all_forces = []
-            all_energies = []
-            all_stresses = []
+
+            rep_forces = []
+            rep_energies = []
+            rep_stresses = []
+            valid_graphs = []
+            valid_batch_indices = []
+            valid_atom_slices = []
+            current_valid_atom_offset = 0
 
             for b in range(batch_size):
                 n_atoms = int(num_atoms[b].item())
@@ -173,6 +179,9 @@ class OrbBackboneWrapper(nn.Module):
                     f_max=self.max_force,
                     eta=0.70,
                 )
+                rep_forces.append(f_rep)
+                rep_stresses.append(s_rep)
+                rep_energies.append(e_rep.view(1, 1))
 
                 sub_atom_types = sub_types_t.detach().cpu().numpy()
                 sub_cart_coords = sub_coords_t.detach().cpu().numpy()
@@ -180,54 +189,78 @@ class OrbBackboneWrapper(nn.Module):
 
                 try:
                     atoms = Atoms(numbers=sub_atom_types, positions=sub_cart_coords, cell=sub_cell, pbc=True)
-                    try:
-                        graph = self.atoms_adapter.from_ase_atoms(atoms, device=self.device)
-                    except Exception:
-                        graph = self.atoms_adapter.from_ase_atoms(atoms, device="cpu")
-                        if str(self.device) != "cpu":
-                            graph = graph.to(self.device)
-                    pred = self.orb_model.predict(graph)
+                    # Use CPU for neighbor search to avoid unsupported CUDA warp / triton kernels on Kepler
+                    graph = self.atoms_adapter.from_ase_atoms(atoms, device="cpu")
+                    valid_graphs.append(graph)
+                    valid_batch_indices.append(b)
+                    valid_atom_slices.append((current_valid_atom_offset, current_valid_atom_offset + n_atoms))
+                    current_valid_atom_offset += n_atoms
+                except Exception as exc:
+                    logger.debug(
+                        "ORB graph construction failed for structure %d (%s). Using smooth conservative repulsive fallback.", b, exc
+                    )
 
-                    f_orb = torch.as_tensor(pred["forces"], device=cart_coords.device, dtype=cart_coords.dtype)
-                    e_orb = torch.as_tensor(pred["energy"], device=cart_coords.device, dtype=cart_coords.dtype)
-                    s_orb = torch.as_tensor(
-                        pred.get("stress", torch.zeros((3, 3))),
+                start_idx += n_atoms
+
+            final_forces = list(rep_forces)
+            final_stresses = list(rep_stresses)
+            final_energies = list(rep_energies)
+
+            if len(valid_graphs) > 0:
+                try:
+                    batched_graph = AtomGraphs.batch(valid_graphs)
+                    if str(self.device) != "cpu":
+                        batched_graph = batched_graph.to(self.device)
+                    pred = self.orb_model.predict(batched_graph)
+
+                    b_forces = torch.as_tensor(pred["forces"], device=cart_coords.device, dtype=cart_coords.dtype)
+                    b_energies = torch.as_tensor(pred["energy"], device=cart_coords.device, dtype=cart_coords.dtype)
+                    b_stresses = torch.as_tensor(
+                        pred.get("stress", torch.zeros((len(valid_graphs), 6))),
                         device=lattices.device,
                         dtype=lattices.dtype,
                     )
-                    if s_orb.numel() == 6:
-                        s_flat = s_orb.reshape(-1)
-                        s_orb = torch.stack(
-                            [
-                                torch.stack([s_flat[0], s_flat[5], s_flat[4]]),
-                                torch.stack([s_flat[5], s_flat[1], s_flat[3]]),
-                                torch.stack([s_flat[4], s_flat[3], s_flat[2]]),
-                            ]
+
+                    # Convert Voigt stress (N, 6) [xx, yy, zz, yz, xz, xy] to (N, 3, 3) Cauchy tensor
+                    if b_stresses.dim() == 2 and b_stresses.shape[-1] == 6:
+                        idx_map = torch.tensor(
+                            [[0, 5, 4],
+                             [5, 1, 3],
+                             [4, 3, 2]],
+                            device=b_stresses.device,
+                            dtype=torch.long,
                         )
-                    elif s_orb.numel() == 9:
-                        s_orb = s_orb.reshape(3, 3)
+                        b_stresses = b_stresses[:, idx_map]
+                    elif b_stresses.dim() == 1 and b_stresses.shape[0] == 6:
+                        idx_map = torch.tensor(
+                            [[0, 5, 4],
+                             [5, 1, 3],
+                             [4, 3, 2]],
+                            device=b_stresses.device,
+                            dtype=torch.long,
+                        )
+                        b_stresses = b_stresses[idx_map].unsqueeze(0)
+                    elif b_stresses.dim() == 2 and b_stresses.shape[-1] == 9:
+                        b_stresses = b_stresses.reshape(-1, 3, 3)
 
-                    # Smooth transition: augment ORB with repulsive core if overlapping, exactly zero otherwise
-                    f = f_orb + f_rep
-                    s = s_orb + s_rep
-                    e = e_orb + e_rep
+                    # Augment valid predictions with repulsive core
+                    for v_idx, b in enumerate(valid_batch_indices):
+                        a_start, a_end = valid_atom_slices[v_idx]
+                        f_orb = b_forces[a_start:a_end]
+                        s_orb = b_stresses[v_idx]
+                        e_orb = b_energies[v_idx]
+
+                        final_forces[b] = f_orb + rep_forces[b]
+                        final_stresses[b] = s_orb + rep_stresses[b]
+                        final_energies[b] = e_orb.view(1, 1) + rep_energies[b]
                 except Exception as exc:
-                    logger.debug(
-                        "ORB evaluation failed for structure %d (%s). Using smooth conservative repulsive fallback.", b, exc
+                    logger.warning(
+                        "Batched ORB prediction failed (%s). Falling back to repulsive potential.", exc
                     )
-                    # When MLIP fails (unphysical overlap / cell collapse), repulsive core provides physical restoring forces
-                    f = f_rep
-                    s = s_rep
-                    e = e_rep
 
-                all_forces.append(f)
-                all_energies.append(e.unsqueeze(0) if e.dim() == 0 else e.view(1, 1))
-                all_stresses.append(s.unsqueeze(0))
-                start_idx += n_atoms
-
-            forces = torch.cat(all_forces, dim=0)
-            energy = torch.cat(all_energies, dim=0)
-            stress = torch.cat(all_stresses, dim=0)
+            forces = torch.cat(final_forces, dim=0)
+            stress = torch.stack(final_stresses, dim=0)
+            energy = torch.cat(final_energies, dim=0)
 
             clamped_forces, clamped_stress = clamp_forces_and_stress(
                 forces,
