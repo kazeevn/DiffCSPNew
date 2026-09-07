@@ -7,10 +7,11 @@ import logging
 import random
 from pathlib import Path
 
+from typing import Any
 import numpy as np
 import torch
 from pymatgen.core import Structure
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader, PrefetchLoader
 from tqdm import tqdm
 
 from diffcsp.data.dataset import WyckoffDataset
@@ -42,6 +43,9 @@ def generate_structures(
     n_structures: int = 1100,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     output_path: str | None = None,
+    num_workers: int = 2,
+    prefetch_factor: int = 2,
+    async_dataloader: bool = True,
 ) -> Path:
     """Generates crystal structures from a Wyckoff file using DiffCSP++."""
     set_random_seed(42)
@@ -50,7 +54,17 @@ def generate_structures(
 
     testset = WyckoffDataset(wyckoff_path, mode="transformer", structure_count=n_structures)
     print(f"Loaded {len(testset)} Wyckoff structures for generation.")
-    test_loader = DataLoader(testset, shuffle=False, batch_size=batch_size)
+    loader_kwargs: dict[str, Any] = {
+        "num_workers": num_workers,
+        "pin_memory": (dev.type == "cuda"),
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["worker_init_fn"] = lambda worker_id: torch.set_num_threads(1)
+    test_loader = DataLoader(testset, shuffle=False, batch_size=batch_size, **loader_kwargs)
+    if async_dataloader and dev.type == "cuda":
+        test_loader = PrefetchLoader(test_loader, device=dev)
 
     if model_type == "orb":
         model = CSPDiffusionORB(
@@ -79,7 +93,7 @@ def generate_structures(
 
     frac_coords_list, num_atoms_list, atom_types_list, lattices_list = [], [], [], []
     for batch in tqdm(test_loader, desc="Generating structures"):
-        batch = batch.to(dev)
+        batch = batch.to(dev, non_blocking=True)
         outputs, _ = model.sample(batch, disable_progress=True)
         frac_coords_list.append(outputs["frac_coords"].detach().cpu())
         num_atoms_list.append(outputs["num_atoms"].detach().cpu())
@@ -137,6 +151,15 @@ def main() -> None:
     parser.add_argument("--n-structures", type=int, default=1100, help="Number of structures to generate")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output_path", type=str, default=None, help="Output file path (.json.gz)")
+    parser.add_argument("--num_workers", type=int, default=2, help="Number of DataLoader worker processes")
+    parser.add_argument("--prefetch_factor", type=int, default=2, help="DataLoader prefetch factor")
+    parser.add_argument(
+        "--no_async_dataloader",
+        dest="async_dataloader",
+        action="store_false",
+        help="Disable asynchronous PrefetchLoader",
+    )
+    parser.set_defaults(async_dataloader=True)
     args = parser.parse_args()
 
     generate_structures(
@@ -151,6 +174,9 @@ def main() -> None:
         n_structures=args.n_structures,
         device=args.device,
         output_path=args.output_path,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        async_dataloader=args.async_dataloader,
     )
 
 

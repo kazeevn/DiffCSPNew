@@ -12,9 +12,10 @@ import torch
 import torch.distributed as dist
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core import Lattice, Structure
+from typing import Any
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader, PrefetchLoader
 from tqdm import tqdm, trange
 
 from diffcsp.data.dataset import CrystDataset
@@ -22,6 +23,11 @@ from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
 
 logger = logging.getLogger(__name__)
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    """Sets worker process CPU threads to 1 to avoid thread oversubscription."""
+    torch.set_num_threads(1)
 
 
 def set_random_seed(seed: int = 17) -> None:
@@ -56,6 +62,9 @@ def train(
     max_train_samples: int | None = None,
     max_test_samples: int | None = None,
     eval_sample: bool = False,
+    num_workers: int = 2,
+    prefetch_factor: int = 2,
+    async_dataloader: bool = True,
 ) -> None:
     """Executes model training with periodic evaluation."""
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -202,6 +211,15 @@ def train(
             print(f"Dataset '{train_csv}' not found. Exiting training.")
         return
 
+    loader_kwargs: dict[str, Any] = {
+        "num_workers": num_workers,
+        "pin_memory": (dev.type == "cuda"),
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["worker_init_fn"] = _worker_init_fn
+
     # In DDP, avoid race conditions during initial dataset cache extraction
     if is_ddp:
         if is_main:
@@ -211,11 +229,14 @@ def train(
             train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples)
         dist.barrier()
         train_sampler = DistributedSampler(train_set, shuffle=True, drop_last=True)
-        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=train_sampler)
+        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, **loader_kwargs)
     else:
         train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples)
         train_sampler = None
-        train_loader = DataLoader(train_set, shuffle=True, batch_size=batch_size)
+        train_loader = DataLoader(train_set, shuffle=True, batch_size=batch_size, **loader_kwargs)
+
+    if async_dataloader and dev.type == "cuda":
+        train_loader = PrefetchLoader(train_loader, device=dev)
 
     test_loader = None
     if test_csv and Path(test_csv).exists():
@@ -228,7 +249,9 @@ def train(
             dist.barrier()
         else:
             test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples)
-        test_loader = DataLoader(test_set, shuffle=False, batch_size=batch_size)
+        test_loader = DataLoader(test_set, shuffle=False, batch_size=batch_size, **loader_kwargs)
+        if async_dataloader and dev.type == "cuda":
+            test_loader = PrefetchLoader(test_loader, device=dev)
 
     matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
 
@@ -241,7 +264,7 @@ def train(
 
         batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False) if is_main else train_loader
         for batch in batch_iter:
-            batch = batch.to(dev)
+            batch = batch.to(dev, non_blocking=True)
             out = ddp_model(batch)
             loss = out.get("loss")
             if loss is None or torch.isnan(loss):
@@ -272,7 +295,7 @@ def train(
             with torch.no_grad():
                 val_losses = []
                 for batch in tqdm(test_loader, desc="Validating", leave=False):
-                    batch = batch.to(dev)
+                    batch = batch.to(dev, non_blocking=True)
                     loss = model.training_step(batch, 0)
                     if loss is not None:
                         val_losses.append(loss.item())
@@ -290,7 +313,7 @@ def train(
                         [],
                     )
                     for batch in tqdm(test_loader, desc="Sampling Validation", leave=False):
-                        batch = batch.to(dev)
+                        batch = batch.to(dev, non_blocking=True)
                         outputs, _ = model.sample(batch, disable_progress=True)
                         frac_coords_list.append(outputs["frac_coords"].detach().cpu())
                         num_atoms_list.append(outputs["num_atoms"].detach().cpu())
@@ -391,6 +414,15 @@ def main() -> None:
     parser.add_argument("--max_train_samples", type=int, default=None, help="Max training samples")
     parser.add_argument("--max_test_samples", type=int, default=None, help="Max test samples")
     parser.add_argument("--eval_sample", action="store_true", help="Run full generative sampling validation")
+    parser.add_argument("--num_workers", type=int, default=2, help="Number of DataLoader worker processes per rank")
+    parser.add_argument("--prefetch_factor", type=int, default=2, help="DataLoader prefetch factor")
+    parser.add_argument(
+        "--no_async_dataloader",
+        dest="async_dataloader",
+        action="store_false",
+        help="Disable asynchronous PrefetchLoader",
+    )
+    parser.set_defaults(async_dataloader=True)
     args = parser.parse_args()
 
     train(
@@ -415,6 +447,9 @@ def main() -> None:
         max_train_samples=args.max_train_samples,
         max_test_samples=args.max_test_samples,
         eval_sample=args.eval_sample,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        async_dataloader=args.async_dataloader,
     )
 
 
