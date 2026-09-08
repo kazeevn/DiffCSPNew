@@ -25,6 +25,55 @@ from diffcsp.models.diffusion_orb import CSPDiffusionORB
 logger = logging.getLogger(__name__)
 
 
+def _resolve_wandb_checkpoint(uri: str) -> Path:
+    """Downloads a checkpoint from W&B given a ``wandb://`` URI and returns the local path.
+
+    Supported URI formats::
+
+        wandb://entity/project/artifact_name:alias
+        wandb://project/artifact_name:alias
+        wandb://artifact_name:alias
+
+    The alias defaults to ``latest`` if omitted.
+    """
+    import wandb
+
+    ref = uri[len("wandb://"):]
+    parts = ref.split("/")
+    if len(parts) == 3:
+        entity, project, artifact_ref = parts
+    elif len(parts) == 2:
+        entity = None
+        project, artifact_ref = parts
+    elif len(parts) == 1:
+        entity = None
+        project = None
+        artifact_ref = parts[0]
+    else:
+        raise ValueError(
+            f"Invalid wandb URI: '{uri}'. "
+            "Expected wandb://[entity/][project/]artifact_name[:alias]"
+        )
+
+    if ":" not in artifact_ref:
+        artifact_ref += ":latest"
+
+    full_name_parts = [p for p in [entity, project, artifact_ref] if p]
+    full_name = "/".join(full_name_parts)
+
+    api = wandb.Api()
+    print(f"Downloading W&B artifact '{full_name}' ...")
+    artifact = api.artifact(full_name, type="model")
+    artifact_dir = Path(artifact.download())
+
+    pt_files = list(artifact_dir.glob("*.pt"))
+    if not pt_files:
+        raise FileNotFoundError(f"No .pt file found in downloaded artifact at {artifact_dir}")
+    resolved = pt_files[0]
+    print(f"Resolved checkpoint to {resolved}")
+    return resolved
+
+
 def _worker_init_fn(worker_id: int) -> None:
     """Sets worker process CPU threads to 1 to avoid thread oversubscription."""
     torch.set_num_threads(1)
@@ -118,7 +167,12 @@ def train(
     start_epoch = 0
     resume_path = None
     if resume is not None:
-        resume_path = Path(ckpt_path) if resume == "auto" else Path(resume)
+        if resume == "auto":
+            resume_path = Path(ckpt_path)
+        elif resume.startswith("wandb://"):
+            resume_path = _resolve_wandb_checkpoint(resume)
+        else:
+            resume_path = Path(resume)
 
     resume_wandb_id = None
     if resume_path and resume_path.exists():
@@ -148,7 +202,10 @@ def train(
             if is_main:
                 print(f"Loaded model weights from legacy checkpoint '{resume_path}'")
 
+    best_val_loss = float("inf")
+
     def save_checkpoint(epoch_idx: int, train_loss_val: float, val_loss_val: float | None = None) -> None:
+        nonlocal best_val_loss
         if not is_main:
             return
         ckpt = {
@@ -167,6 +224,29 @@ def train(
         torch.save(ckpt, tmp_p)
         tmp_p.replace(p)
         print(f"Saved checkpoint (epoch {epoch_idx + 1}) to {ckpt_path}")
+
+        # Upload checkpoint as a W&B Artifact for portability
+        if wandb_run is not None:
+            import wandb
+
+            artifact = wandb.Artifact(
+                name=f"model-{wandb_run.id}",
+                type="model",
+                metadata={
+                    "epoch": epoch_idx + 1,
+                    "model_type": model_type,
+                    "train_loss": train_loss_val,
+                    "val_loss": val_loss_val,
+                },
+            )
+            artifact.add_file(str(p))
+            aliases = [f"epoch-{epoch_idx + 1}", "latest"]
+            is_best = val_loss_val is not None and val_loss_val < best_val_loss
+            if is_best:
+                best_val_loss = val_loss_val
+                aliases.append("best")
+            wandb_run.log_artifact(artifact, aliases=aliases)
+            print(f"Uploaded checkpoint artifact to W&B (aliases: {aliases})")
 
     stop_requested = False
 

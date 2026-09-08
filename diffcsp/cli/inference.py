@@ -21,6 +21,67 @@ from diffcsp.models.diffusion_orb import CSPDiffusionORB
 logger = logging.getLogger(__name__)
 
 
+def _resolve_checkpoint(ckpt_path: str, device: torch.device) -> Path:
+    """Resolves a checkpoint path, downloading from W&B if a ``wandb://`` URI is provided.
+
+    Supported URI formats::
+
+        wandb://entity/project/artifact_name:alias   (fully qualified)
+        wandb://project/artifact_name:alias           (entity from env/config)
+        wandb://artifact_name:alias                   (entity+project from env/config)
+
+    The alias defaults to ``latest`` if omitted (i.e. no ``:alias`` suffix).
+
+    For local paths, returns the path unchanged.
+    """
+    if not ckpt_path.startswith("wandb://"):
+        return Path(ckpt_path)
+
+    import wandb
+
+    ref = ckpt_path[len("wandb://"):]
+    parts = ref.split("/")
+    if len(parts) == 3:
+        entity, project, artifact_ref = parts
+    elif len(parts) == 2:
+        entity = None
+        project, artifact_ref = parts
+    elif len(parts) == 1:
+        entity = None
+        project = None
+        artifact_ref = parts[0]
+    else:
+        raise ValueError(
+            f"Invalid wandb URI: '{ckpt_path}'. "
+            "Expected wandb://[entity/][project/]artifact_name[:alias]"
+        )
+
+    if ":" not in artifact_ref:
+        artifact_ref += ":latest"
+
+    # Build the full artifact path for the API
+    full_name_parts = [p for p in [entity, project, artifact_ref] if p]
+    full_name = "/".join(full_name_parts)
+
+    api = wandb.Api()
+    print(f"Downloading W&B artifact '{full_name}' ...")
+    artifact = api.artifact(full_name, type="model")
+    artifact_dir = Path(artifact.download())
+
+    # Find the checkpoint file inside the downloaded artifact
+    pt_files = list(artifact_dir.glob("*.pt"))
+    if len(pt_files) == 1:
+        resolved = pt_files[0]
+    elif len(pt_files) > 1:
+        # Prefer file matching the artifact name
+        resolved = pt_files[0]
+    else:
+        raise FileNotFoundError(f"No .pt file found in downloaded artifact at {artifact_dir}")
+
+    print(f"Resolved checkpoint to {resolved}")
+    return resolved
+
+
 def set_random_seed(seed: int = 42) -> None:
     """Sets random seeds for deterministic generation."""
     torch.backends.cudnn.deterministic = True
@@ -77,10 +138,15 @@ def generate_structures(
     else:
         model = CSPDiffusion(device=dev).to(dev)
 
-    # Load checkpoint if available
-    ckpt_file = Path(ckpt_path)
+    # Load checkpoint — supports local paths and wandb:// URIs
+    ckpt_file = _resolve_checkpoint(ckpt_path, dev)
     if ckpt_file.exists():
-        state_dict = torch.load(ckpt_file, map_location=dev, weights_only=True)
+        ckpt_data = torch.load(ckpt_file, map_location=dev, weights_only=False)
+        # Handle full training checkpoint dicts (contain model_state_dict key)
+        if isinstance(ckpt_data, dict) and "model_state_dict" in ckpt_data:
+            state_dict = ckpt_data["model_state_dict"]
+        else:
+            state_dict = ckpt_data
         if "decoder.coord_out.weight" in state_dict or "decoder.csp_layers.0.edge_mlp.0.weight" in state_dict:
             model.load_state_dict(state_dict, strict=False)
         elif hasattr(model, "decoder"):
