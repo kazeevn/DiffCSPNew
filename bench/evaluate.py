@@ -7,6 +7,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import argparse, pickle
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -33,6 +34,7 @@ def main():
     ap.add_argument("--stol", type=float, default=0.5)
     ap.add_argument("--angle_tol", type=float, default=10.0)
     ap.add_argument("--ltol", type=float, default=0.3)
+    ap.add_argument("--n_jobs", type=int, default=20)
     ap.add_argument("--out", default="runs/bench/mp20/results.pkl")
     a = ap.parse_args()
 
@@ -45,7 +47,7 @@ def main():
         label, path = spec.split("=", 1)
         with open(path, "rb") as f:
             preds = pickle.load(f)
-        rms = Parallel(n_jobs=-1)(
+        rms = Parallel(n_jobs=a.n_jobs)(
             delayed(_score)(entries[p["entry"]]["gt"], p["pred"], a.stol, a.angle_tol, a.ltol)
             for p in tqdm(preds, desc=f"matching {label}")
         )

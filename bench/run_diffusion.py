@@ -88,12 +88,12 @@ def to_structures(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--regime", choices=["orb", "cspnet"], required=True)
+    ap.add_argument("--regime", choices=["orb", "cspnet", "wyckoff", "asymm"], required=True)
     ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--batch_size", type=int, default=128)
-    ap.add_argument("--hidden_dim", type=int, default=128)
-    ap.add_argument("--num_layers", type=int, default=2)
+    ap.add_argument("--hidden_dim", type=int, default=None)
+    ap.add_argument("--num_layers", type=int, default=None)
     ap.add_argument("--orb_model", default="orb-v3")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", required=True)
@@ -112,17 +112,40 @@ def main():
         from diffcsp.models.diffusion_orb import CSPDiffusionORB
         from diffcsp.cli.train import _load_adapter_state_dict
 
+        h = a.hidden_dim if a.hidden_dim is not None else 128
+        l = a.num_layers if a.num_layers is not None else 2
         model = CSPDiffusionORB(
-            device=dev, orb_model_name=a.orb_model, hidden_dim=a.hidden_dim, num_layers=a.num_layers
+            device=dev, orb_model_name=a.orb_model, hidden_dim=h, num_layers=l
         ).to(dev)
         ck = torch.load(a.ckpt, map_location=dev, weights_only=False)
         sd = ck["model_state_dict"] if "model_state_dict" in ck else ck
         _load_adapter_state_dict(model.decoder, sd)
         print(f"checkpoint epoch={ck.get('epoch')} val_loss={ck.get('val_loss')}")
+    elif a.regime in ("wyckoff", "asymm"):
+        from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
+        from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet
+
+        h = a.hidden_dim if a.hidden_dim is not None else 512
+        l = a.num_layers if a.num_layers is not None else 6
+        model = WyckoffDiffusion(
+            device=dev,
+            decoder=WyckoffCSPNet(hidden_dim=h, num_layers=l),
+        ).to(dev)
+        raw = torch.load(a.ckpt, map_location=dev, weights_only=False)
+        if isinstance(raw, dict) and raw.get("model_type") in ("wyckoff", "asymm"):
+            print(f"checkpoint epoch={raw.get('epoch')} train_loss={raw.get('train_loss')} val_loss={raw.get('val_loss')}")
+            model.load_state_dict(raw["model_state_dict"])
+        else:
+            load_vanilla(model, a.ckpt)
     else:
         from diffcsp.models.diffusion import CSPDiffusion
 
-        model = CSPDiffusion(device=dev).to(dev)
+        h = a.hidden_dim if a.hidden_dim is not None else 512
+        l = a.num_layers if a.num_layers is not None else 6
+        model = CSPDiffusion(
+            device=dev,
+            decoder=CSPNet(hidden_dim=h, num_layers=l),
+        ).to(dev)
         load_vanilla(model, a.ckpt)
     model.eval()
 

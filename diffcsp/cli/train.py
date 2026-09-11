@@ -22,6 +22,8 @@ from diffcsp.data.dataset import CrystDataset
 from diffcsp.models.cspnet import CSPNet
 from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
+from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet
+from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +144,7 @@ def train(
     ckpt_path: str = "diffcsp_ckpt.pt",
     resume: str | None = None,
     save_freq: int = 1,
-    use_wandb: bool = False,
+    use_wandb: bool = True,
     wandb_project: str = "diffcsp",
     wandb_entity: str | None = None,
     max_train_samples: int | None = None,
@@ -180,7 +182,7 @@ def train(
     # Each backbone has its own natural size: the ORB adapter is a small head on a
     # frozen 25.6M potential, CSPNet is the whole denoiser. A single CLI default
     # would silently shrink one of them, so the flags override per-model defaults.
-    ARCH_DEFAULTS = {"orb": (128, 2), "cspnet": (512, 6)}
+    ARCH_DEFAULTS = {"orb": (128, 2), "cspnet": (512, 6), "wyckoff": (512, 6), "asymm": (512, 6)}
     arch_h, arch_l = ARCH_DEFAULTS[model_type]
     if hidden_dim is not None:
         arch_h = hidden_dim
@@ -204,6 +206,14 @@ def train(
             print(f"CSPNetORB adapter: hidden_dim={arch_h} num_layers={arch_l}")
             print(f"Trainable params: {counts['trainable']:,} ({counts['trainable_pct']:.2f}%)")
             print(f"Frozen params:    {counts['frozen']:,}")
+    elif model_type in ("wyckoff", "asymm"):
+        model = WyckoffDiffusion(
+            device=dev, decoder=WyckoffCSPNet(hidden_dim=arch_h, num_layers=arch_l)
+        ).to(dev)
+        params_to_train = list(model.parameters())
+        if is_main:
+            print(f"WyckoffCSPNet: hidden_dim={arch_h} num_layers={arch_l}")
+            print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
     else:
         model = CSPDiffusion(
             device=dev, decoder=CSPNet(hidden_dim=arch_h, num_layers=arch_l)
@@ -556,7 +566,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="DiffCSP++ Training CLI")
     parser.add_argument("--train_csv", type=str, default="data/mp-20/train.csv", help="Path to training CSV")
     parser.add_argument("--test_csv", type=str, default="data/mp-20/test.csv", help="Path to test CSV")
-    parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
+    parser.add_argument("--model", type=str, choices=["orb", "cspnet", "wyckoff", "asymm"], default="orb", help="Model backbone")
     parser.add_argument(
         "--orb_model",
         type=str,
@@ -607,7 +617,13 @@ def main() -> None:
         help="Resume checkpoint path (or auto for --ckpt_path)",
     )
     parser.add_argument("--save_freq", type=int, default=1, help="Checkpoint saving frequency in epochs")
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument(
+        "--wandb",
+        dest="wandb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Weights & Biases logging (default: True; use --no-wandb to disable)",
+    )
     parser.add_argument("--wandb_project", type=str, default="diffcsp", help="W&B project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name")
     parser.add_argument("--max_train_samples", type=int, default=None, help="Max training samples")

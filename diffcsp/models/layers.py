@@ -132,3 +132,119 @@ class CSPLayer(nn.Module):
         edge_feat = self.edge_model(node_features, frac_coords, lattices, edge_index, edge2graph, frac_diff)
         node_out = self.node_model(node_features, edge_feat, edge_index)
         return node_input + node_out
+
+
+def generate_asymmetric_edges(
+    num_sites: torch.Tensor,
+    num_atoms: torch.Tensor,
+    device: torch.device | str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Constructs bipartite multi-edges between K Wyckoff site anchors and N cell atoms.
+
+    For each crystal in the batch with K_b Wyckoff sites and N_b atoms in the
+    conventional unit cell, generates directed edges from all N_b atoms to
+    each of the K_b Wyckoff site anchors (K_b * N_b total edges per crystal).
+
+    Args:
+        num_sites: (B,) number of Wyckoff site anchors per crystal.
+        num_atoms: (B,) number of atoms in conventional unit cell per crystal.
+        device: torch.device for allocated edge index tensors.
+
+    Returns:
+        target_sites: (E,) target Wyckoff site index in [0, K_total).
+        source_atoms: (E,) source atom index in [0, N_total).
+    """
+    dev = device if device is not None else num_sites.device
+    block_list = [
+        torch.ones((k.item(), n.item()), device=dev, dtype=torch.bool)
+        for k, n in zip(num_sites, num_atoms)
+    ]
+    rect_graph = torch.block_diag(*block_list)
+    edges = torch.nonzero(rect_graph).T
+    return edges[0], edges[1]
+
+
+class WyckoffCSPLayer(nn.Module):
+    """Message passing graph layer operating on the Asymmetric Unit (Wyckoff sites).
+
+    Each unique Wyckoff site W_i receives aggregated messages from all atoms in
+    the unit cell (which are symmetry replicas of all Wyckoff sites W_j under space
+    group operations (R, t)):
+
+        m_i = (1/N_cell) sum_{j=1}^K sum_{(R, t) in orbit(j)} Message(h_i, h_j, lattice, r_{i -> (j, R, t)})
+
+    Args:
+        hidden_dim: Dimensionality of node embeddings.
+        act_fn: Activation module (SiLU or ReLU).
+        dis_emb: Distance / coordinate embedding module.
+        ln: If True, applies LayerNorm before message passing.
+        ip: Kept for API symmetry with CSPLayer.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        act_fn: nn.Module | None = None,
+        dis_emb: nn.Module | None = None,
+        ln: bool = False,
+        ip: bool = True,
+    ) -> None:
+        super().__init__()
+        self.dis_emb = dis_emb
+        self.dis_dim = dis_emb.dim if dis_emb is not None else 3
+        self.ln = ln
+        self.ip = ip
+
+        act = act_fn if act_fn is not None else nn.SiLU()
+
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + 6 + self.dis_dim, hidden_dim),
+            act,
+            nn.Linear(hidden_dim, hidden_dim),
+            act,
+        )
+        self.node_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            act,
+            nn.Linear(hidden_dim, hidden_dim),
+            act,
+        )
+        if self.ln:
+            self.layer_norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        site_features: torch.Tensor,
+        site_coords: torch.Tensor,
+        full_coords: torch.Tensor,
+        lattices: torch.Tensor,
+        target_sites: torch.Tensor,
+        source_sites: torch.Tensor,
+        source_atoms: torch.Tensor,
+        edge2graph: torch.Tensor,
+        frac_diff: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Residual message passing step for Wyckoff sites."""
+        node_input = site_features
+        if self.ln:
+            site_features = self.layer_norm(node_input)
+
+        hi = site_features[target_sites]
+        hj = site_features[source_sites]
+
+        if frac_diff is None:
+            xi = site_coords[target_sites]
+            xj = full_coords[source_atoms]
+            frac_diff = (xj - xi) % 1.0
+
+        if self.dis_emb is not None:
+            frac_diff = self.dis_emb(frac_diff)
+
+        lattice_edges = lattices[edge2graph]
+        edge_in = torch.cat([hi, hj, lattice_edges, frac_diff], dim=-1)
+        edge_feat = self.edge_mlp(edge_in)
+
+        agg = scatter(edge_feat, target_sites, dim=0, dim_size=site_features.shape[0], reduce="mean")
+        node_in = torch.cat([site_features, agg], dim=-1)
+        node_out = self.node_mlp(node_in)
+        return node_input + node_out
