@@ -138,6 +138,7 @@ def main():
         else:
             load_vanilla(model, a.ckpt)
     else:
+        from diffcsp.models.cspnet import CSPNet
         from diffcsp.models.diffusion import CSPDiffusion
 
         h = a.hidden_dim if a.hidden_dim is not None else 512
