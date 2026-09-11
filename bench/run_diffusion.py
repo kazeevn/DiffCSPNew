@@ -88,7 +88,7 @@ def to_structures(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--regime", choices=["orb", "cspnet", "wyckoff", "asymm"], required=True)
+    ap.add_argument("--regime", choices=["orb", "cspnet", "wyckoff", "asymm", "painn"], required=True)
     ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--batch_size", type=int, default=128)
@@ -127,6 +127,22 @@ def main():
         sd = ck["model_state_dict"] if "model_state_dict" in ck else ck
         _load_adapter_state_dict(model.decoder, sd)
         print(f"checkpoint epoch={ck.get('epoch')} val_loss={ck.get('val_loss')}")
+    elif a.regime == "painn":
+        from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
+        from diffcsp.models.wyckoff_painn import WyckoffPaiNN
+
+        h = a.hidden_dim if a.hidden_dim is not None else 128
+        l = a.num_layers if a.num_layers is not None else 4
+        model = WyckoffDiffusion(
+            device=dev,
+            decoder=WyckoffPaiNN(hidden_dim=h, num_layers=l),
+        ).to(dev)
+        raw = torch.load(a.ckpt, map_location=dev, weights_only=False)
+        if isinstance(raw, dict) and "model_state_dict" in raw:
+            print(f"checkpoint epoch={raw.get('epoch')} train_loss={raw.get('train_loss')} val_loss={raw.get('val_loss')}")
+            model.load_state_dict(raw["model_state_dict"])
+        elif isinstance(raw, dict):
+            model.load_state_dict(raw)
     elif a.regime in ("wyckoff", "asymm"):
         from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
         from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet

@@ -79,6 +79,8 @@ class WyckoffCSPNet(nn.Module):
         source_sites: torch.Tensor | None = None,
         edge2graph: torch.Tensor | None = None,
         site_projectors: torch.Tensor | None = None,
+        batch_ops: torch.Tensor | None = None,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward denoising step on the asymmetric unit.
 

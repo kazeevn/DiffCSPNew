@@ -17,6 +17,15 @@ from tqdm import tqdm
 def _score(gt, pred, stol, angle_tol, ltol):
     if pred is None:
         return None
+    try:
+        vol = pred.lattice.volume
+        if vol < 0.1 or np.isnan(vol) or np.isinf(vol):
+            return None
+        if any(np.isnan(pred.lattice.abc)) or any(x <= 0 for x in pred.lattice.abc):
+            return None
+    except Exception:
+        return None
+
     from pymatgen.analysis.structure_matcher import StructureMatcher
 
     m = StructureMatcher(stol=stol, angle_tol=angle_tol, ltol=ltol)

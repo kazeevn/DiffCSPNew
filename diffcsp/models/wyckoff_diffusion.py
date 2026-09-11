@@ -119,6 +119,7 @@ class WyckoffDiffusion(nn.Module):
             site2graph,
             inverse_site_map,
             site_projectors=site_P,
+            batch_ops=batch.ops,
         )
         pred_crys_fam = self.crystal_family.proj_k_to_spacegroup(pred_crys_fam, batch.spacegroup)
 
@@ -222,6 +223,7 @@ class WyckoffDiffusion(nn.Module):
                 source_sites=source_sites,
                 edge2graph=edge2graph,
                 site_projectors=site_P,
+                batch_ops=batch.ops,
             )
             pred_x = pred_x * torch.sqrt(sigma_norm_val)
 
@@ -263,11 +265,13 @@ class WyckoffDiffusion(nn.Module):
                 source_sites=source_sites,
                 edge2graph=edge2graph,
                 site_projectors=site_P,
+                batch_ops=batch.ops,
             )
             pred_x = pred_x * torch.sqrt(sigma_norm_val)
 
             crys_fam_next = c0 * (crys_fam_t - c1 * pred_crys_fam) + sigmas * rand_crys_fam
             crys_fam_next = self.crystal_family.proj_k_to_spacegroup(crys_fam_next, batch.spacegroup)
+            crys_fam_next = torch.clamp(crys_fam_next, -8.0, 8.0)
 
             site_x_next = site_x_half - step_size_pred * pred_x + std_x_pred * rand_x
             site_x_next = ((site_P @ site_x_next.unsqueeze(-1)).squeeze(-1) + site_x0) % 1.0
