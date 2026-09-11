@@ -53,6 +53,50 @@ def build_crystal(crystal_str: str, niggli: bool = True, primitive: bool = False
     )
 
 
+def kick_pyxtal_until_it_works(
+    structure: Any,
+    tol: float = 0.1,
+    a_tol: float = 5.0,
+    attempts: int = 30,
+) -> Any:
+    """Retries pyXtal symmetry detection across a spread of tolerances.
+
+    spglib returns None for structures it cannot symmetrize at a given
+    tolerance, which surfaces from pyXtal as AttributeError on the missing
+    dataset. A single tolerance therefore discards structures that a looser or
+    tighter one resolves cleanly, and over a million-row dataset that is a lot
+    of avoidable loss.
+
+    The tolerance ladder interleaves multipliers going up (1 -> 100) and down
+    (~1 -> 1e-6), so the common cases -- coordinates just outside tolerance, and
+    coordinates so close that sites merge -- are both reached early.
+
+    Mirrors ``kick_pyxtal_until_it_works`` in WyckoffTransformer
+    (``wyckoff_transformer/data.py``); kept as a copy rather than an import so
+    the two repositories stay independent. Intermediate attempts log at debug
+    rather than exception level, because at this dataset size a traceback per
+    failed attempt buries the run log.
+    """
+    from pymatgen.symmetry.analyzer import SymmetryUndeterminedError
+
+    n_down = attempts // 2
+    multipliers = np.empty(attempts)
+    multipliers[::2] = np.logspace(0, 2, attempts - n_down)
+    multipliers[1::2] = np.logspace(-0.01, -6, n_down)
+
+    for attempt, multiplier in enumerate(multipliers):
+        try:
+            c = pyxtal()
+            c.from_seed(structure, tol=tol * multiplier, a_tol=a_tol)
+            if attempt:
+                logger.debug("pyxtal succeeded on attempt %d (tol x%.3g)", attempt, multiplier)
+            return c
+        except (AttributeError, SymmetryUndeterminedError) as e:
+            logger.debug("pyxtal attempt %d (tol x%.3g) failed: %s", attempt, multiplier, e)
+
+    raise RuntimeError(f"pyxtal failed at all {attempts} tolerances")
+
+
 def build_crystal_graph(crystal: Any, graph_method: str = "crystalnn", tol: float = 0.1) -> tuple:
     """Extracts crystal graph, symmetry operations, and Wyckoff site anchors.
 
@@ -65,12 +109,27 @@ def build_crystal_graph(crystal: Any, graph_method: str = "crystalnn", tol: floa
         Tuple of (frac_coords, atom_types, lengths, angles, edge_indices,
                   to_jimages, num_atoms, operation, inv_rotation, anchor_idxs, space_group)
     """
-    c = pyxtal()
     if isinstance(crystal, dict):
+        c = pyxtal()
         c.from_random(**crystal, max_count=30)
     else:
-        c.from_seed(crystal, tol=tol)
+        c = kick_pyxtal_until_it_works(crystal, tol=tol)
 
+    return crystal_graph_from_pyxtal(c, graph_method=graph_method)
+
+
+def crystal_graph_from_pyxtal(c: Any, graph_method: str = "crystalnn") -> tuple:
+    """Extracts the graph, symmetry operations and Wyckoff anchors from a pyXtal object.
+
+    Split out of :func:`build_crystal_graph` so that a caller holding a specific
+    pyXtal instance -- one particular ``from_random`` draw, say -- can derive the
+    model inputs from exactly that structure instead of triggering a fresh
+    random draw.
+
+    Returns:
+        Tuple of (frac_coords, atom_types, lengths, angles, edge_indices,
+                  to_jimages, num_atoms, operation, inv_rotation, anchor_idxs, space_group)
+    """
     space_group = c.group.number
     pmg_crystal = c.to_pymatgen(resort=False)
 
@@ -158,12 +217,17 @@ def process_one(
 
         graph_arrays = build_crystal_graph(crystal, graph_method=graph_method)
         return {
-            "mp_id": row.get("material_id", ""),
+            "mp_id": row.get("material_id", "") or row.get("immutable_id", ""),
             "cif": crystal_str,
             "graph_arrays": graph_arrays,
         }
-    except (RuntimeError, TypeError, ValueError) as e:
-        logger.warning("Error processing crystal: %s", e)
+    except Exception as e:
+        # Deliberately broad: this is a best-effort per-structure conversion run
+        # across millions of rows inside a joblib pool, and an escaping exception
+        # tears down the whole pool and discards every completed result. spglib
+        # can return None for a structure it cannot symmetrize, which surfaces
+        # from pyxtal as AttributeError rather than one of the tidy value errors.
+        logger.warning("Error processing crystal (%s): %s", type(e).__name__, e)
         return None
 
 
