@@ -6,7 +6,8 @@ DiffCSP++ generates periodic crystal structures by diffusing atomic fractional c
 
 **Results and notes:** [`docs/benchmark.md`](docs/benchmark.md) for structure-prediction
 benchmarks, [`docs/training-stability.md`](docs/training-stability.md) for known
-training-stability issues and proposed fixes.
+training-stability issues and proposed fixes, [`docs/architectural-innovations.md`](docs/architectural-innovations.md) for
+recent architectural innovations for Wyckoff-conditioned CSP.
 
 ---
 
