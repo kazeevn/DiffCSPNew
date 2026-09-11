@@ -54,6 +54,9 @@ class WyckoffPaiNN(nn.Module):
 
         # Equivariant coordinate output head: linear combination of vector channels
         self.coord_out_weights = nn.Linear(hidden_dim, 1, bias=False)
+        nn.init.normal_(self.coord_out_weights.weight, std=0.01)
+
+        self.final_norm = nn.LayerNorm(hidden_dim)
 
         # Lattice output head: maps rotationally-invariant pooled scalar state + current lattice state to 6D crystal family update
         self.lattice_mlp = nn.Sequential(
@@ -61,6 +64,7 @@ class WyckoffPaiNN(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, 6, bias=False),
         )
+        nn.init.zeros_(self.lattice_mlp[-1].weight)
 
     def forward(
         self,
@@ -116,7 +120,9 @@ class WyckoffPaiNN(nn.Module):
 
         # Regularized matrix inverse to guarantee stability even under noisy early sampling steps
         L_safe = torch.nan_to_num(L, nan=1.0, posinf=50.0, neginf=-50.0)
-        inv_L = torch.linalg.pinv(L_safe, rcond=1e-4)
+        U, S, Vh = torch.linalg.svd(L_safe)
+        S_inv = 1.0 / torch.clamp(S, min=0.5)
+        inv_L = (Vh.transpose(-2, -1) * S_inv.unsqueeze(-2)) @ U.transpose(-2, -1)
 
         # Build bipartite asymmetric edge topology if not provided
         if target_sites is None or source_atoms is None:
@@ -168,6 +174,8 @@ class WyckoffPaiNN(nn.Module):
         # 1. Equivariant coordinate readout
         # Map (K, C, 3) -> (K, 3) Cartesian vector update
         coord_cart = self.coord_out_weights(v_sites.transpose(1, 2)).squeeze(-1)  # (K, 3)
+        coord_norm = torch.sqrt(torch.sum(coord_cart**2, dim=-1, keepdim=True) + 1e-8)
+        coord_cart = coord_cart * torch.clamp(10.0 / coord_norm, max=1.0)
         
         # Convert Cartesian displacement to fractional: delta_x = coord_cart @ inv_L
         inv_L_sites = inv_L[site2graph]
@@ -180,7 +188,10 @@ class WyckoffPaiNN(nn.Module):
             coord_out = coord_frac
 
         # 2. Lattice readout: pooled invariant scalar state + current lattice state
-        graph_scalar = scatter(s_sites, site2graph, dim=0, dim_size=B, reduce=self.pooling)
-        lattice_out = self.lattice_mlp(torch.cat([graph_scalar, crys_fam], dim=-1))
+        s_sites_norm = self.final_norm(s_sites)
+        graph_scalar = scatter(s_sites_norm, site2graph, dim=0, dim_size=B, reduce=self.pooling)
+        crys_fam_clamped = crys_fam.clamp(-8.0, 8.0)
+        lattice_out = self.lattice_mlp(torch.cat([graph_scalar, crys_fam_clamped], dim=-1))
+        lattice_out = torch.clamp(lattice_out, -15.0, 15.0)
 
         return lattice_out, coord_out

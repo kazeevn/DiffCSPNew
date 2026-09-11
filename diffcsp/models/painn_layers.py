@@ -69,17 +69,24 @@ class WyckoffPaiNNLayer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim * 3),
         )
         self.scalar_message_lin = nn.Linear(hidden_dim, hidden_dim)
+        self.scalar_norm = nn.LayerNorm(hidden_dim)
 
         # Block B: Intra-node scalar-vector mixing
         self.w_u = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.w_v = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.w_p = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.update_norm = nn.LayerNorm(hidden_dim)
 
         self.update_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim * 2),
         )
+
+        # Zero-initialization of residual update branches for deep GNN stability
+        nn.init.zeros_(self.update_mlp[-1].weight)
+        nn.init.zeros_(self.update_mlp[-1].bias)
+        nn.init.zeros_(self.w_p.weight)
 
     def forward(
         self,
@@ -140,7 +147,9 @@ class WyckoffPaiNNLayer(nn.Module):
             v_replica = v_source
         s_replica = s_sites[source_sites]  # (E, C) - scalar is invariant
 
-        # Message computation
+        # Message computation with normalized scalar input
+        s_norm = self.scalar_norm(s_sites)
+        s_replica = s_norm[source_sites]
         h_s = self.scalar_message_lin(s_replica)  # (E, C)
 
         # Vector message: combines rotated source vector with directional bond vector
@@ -160,16 +169,16 @@ class WyckoffPaiNNLayer(nn.Module):
         U = self.w_u(v_sites.transpose(1, 2)).transpose(1, 2)  # (K, C, 3)
         V = self.w_v(v_sites.transpose(1, 2)).transpose(1, 2)  # (K, C, 3)
 
-        # Invariant channel norms and inner products
+        # Invariant channel norms and inner products (scaled by channel dimension)
         q = torch.sqrt(torch.sum(V ** 2, dim=-1) + 1e-8)  # (K, C)
-        p = torch.sum(U * V, dim=-1)  # (K, C)
+        p = torch.sum(U * V, dim=-1) / math.sqrt(self.hidden_dim)  # (K, C)
 
-        sq = torch.cat([s_sites, q], dim=-1)  # (K, 2C)
+        sq = torch.cat([self.update_norm(s_sites), q], dim=-1)  # (K, 2C)
         out_sq = self.update_mlp(sq)
         delta_s, gate_v = torch.chunk(out_sq, 2, dim=-1)
         delta_s = delta_s + self.w_p(p)
 
         s_out = s_sites + delta_s
-        v_out = v_sites + gate_v.unsqueeze(-1) * U
+        v_out = v_sites + torch.tanh(gate_v).unsqueeze(-1) * U
 
         return s_out, v_out, e_ij, r_cart, r_unit

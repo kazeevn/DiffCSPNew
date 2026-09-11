@@ -188,8 +188,8 @@ def train(
         "cspnet": (512, 6),
         "wyckoff": (512, 6),
         "asymm": (512, 6),
-        "painn": (128, 4),
-        "wyckoff_painn": (128, 4),
+        "painn": (512, 6),
+        "wyckoff_painn": (512, 6),
     }
     arch_h, arch_l = ARCH_DEFAULTS[model_type]
     if hidden_dim is not None:

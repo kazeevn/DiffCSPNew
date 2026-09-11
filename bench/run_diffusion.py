@@ -131,8 +131,8 @@ def main():
         from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
         from diffcsp.models.wyckoff_painn import WyckoffPaiNN
 
-        h = a.hidden_dim if a.hidden_dim is not None else 128
-        l = a.num_layers if a.num_layers is not None else 4
+        h = a.hidden_dim if a.hidden_dim is not None else 512
+        l = a.num_layers if a.num_layers is not None else 6
         model = WyckoffDiffusion(
             device=dev,
             decoder=WyckoffPaiNN(hidden_dim=h, num_layers=l),
