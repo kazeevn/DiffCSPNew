@@ -19,6 +19,7 @@ from torch_geometric.loader import DataLoader, PrefetchLoader
 from tqdm import tqdm, trange
 
 from diffcsp.data.dataset import CrystDataset
+from diffcsp.models.cspnet import CSPNet
 from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
 
@@ -74,6 +75,39 @@ def _resolve_wandb_checkpoint(uri: str) -> Path:
     return resolved
 
 
+ORB_BACKBONE_PREFIX = "orb_backbone."
+
+
+def _adapter_state_dict(decoder: torch.nn.Module) -> dict[str, Any]:
+    """Returns the decoder's trainable weights, excluding the frozen MLIP backbone.
+
+    The backbone is pretrained and frozen, so storing it only bloats the
+    checkpoint and ties it to one ORB variant. Leaving it out keeps a checkpoint
+    loadable after switching backbone (e.g. orb-v2 to orb-v3).
+    """
+    return {k: v for k, v in decoder.state_dict().items() if not k.startswith(ORB_BACKBONE_PREFIX)}
+
+
+def _load_adapter_state_dict(decoder: torch.nn.Module, state_dict: dict[str, Any]) -> None:
+    """Loads adapter weights into the decoder, tolerating an embedded backbone.
+
+    Checkpoints written before the backbone was excluded carry its weights under
+    ``orb_backbone.*``; those keys are dropped so that a checkpoint trained
+    against one ORB variant still restores the adapter when another is loaded.
+    """
+    filtered = {k: v for k, v in state_dict.items() if not k.startswith(ORB_BACKBONE_PREFIX)}
+    dropped = len(state_dict) - len(filtered)
+
+    result = decoder.load_state_dict(filtered, strict=False)
+    missing = [k for k in result.missing_keys if not k.startswith(ORB_BACKBONE_PREFIX)]
+
+    print(f"Restored {len(filtered)} adapter tensors" + (f" (dropped {dropped} frozen backbone tensors)" if dropped else ""))
+    if missing:
+        print(f"[WARN] {len(missing)} adapter tensors absent from checkpoint and left at init: {missing[:8]}")
+    if result.unexpected_keys:
+        print(f"[WARN] {len(result.unexpected_keys)} unexpected tensors ignored: {result.unexpected_keys[:8]}")
+
+
 def _worker_init_fn(worker_id: int) -> None:
     """Sets worker process CPU threads to 1 to avoid thread oversubscription."""
     torch.set_num_threads(1)
@@ -93,14 +127,17 @@ def train(
     train_csv: str = "train.csv",
     test_csv: str | None = "test.csv",
     model_type: str = "orb",
-    orb_model: str = "orb-v2",
+    orb_model: str = "orb-v3",
     mock_orb: bool = False,
+    use_orb_node_features: bool = True,
+    enforce_zero_force: bool = False,
+    force_residual: bool = False,
     batch_size: int = 64,
     lr: float = 1e-3,
     epochs: int = 100,
     eval_freq: int = 10,
-    hidden_dim: int = 128,
-    num_layers: int = 2,
+    hidden_dim: int | None = None,
+    num_layers: int | None = None,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ckpt_path: str = "diffcsp_ckpt.pt",
     resume: str | None = None,
@@ -110,6 +147,9 @@ def train(
     wandb_entity: str | None = None,
     max_train_samples: int | None = None,
     max_test_samples: int | None = None,
+    cache_dir: str | None = None,
+    max_e_hull: float | None = None,
+    max_atoms: int | None = None,
     eval_sample: bool = False,
     num_workers: int = 2,
     prefetch_factor: int = 2,
@@ -137,23 +177,40 @@ def train(
         print(f"DiffCSP++ Training | Model: {model_type.upper()} | World Size: {world_size} | Device: {dev}")
         print("=" * 65)
 
+    # Each backbone has its own natural size: the ORB adapter is a small head on a
+    # frozen 25.6M potential, CSPNet is the whole denoiser. A single CLI default
+    # would silently shrink one of them, so the flags override per-model defaults.
+    ARCH_DEFAULTS = {"orb": (128, 2), "cspnet": (512, 6)}
+    arch_h, arch_l = ARCH_DEFAULTS[model_type]
+    if hidden_dim is not None:
+        arch_h = hidden_dim
+    if num_layers is not None:
+        arch_l = num_layers
+
     if model_type == "orb":
         model = CSPDiffusionORB(
             device=dev,
             orb_model_name=orb_model,
             use_mock_orb=mock_orb,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
+            use_orb_node_features=use_orb_node_features,
+            enforce_zero_force_condition=enforce_zero_force,
+            use_force_residual=force_residual,
+            hidden_dim=arch_h,
+            num_layers=arch_l,
         ).to(dev)
         params_to_train = model.get_trainable_parameters()
         counts = model.count_parameters()
         if is_main:
+            print(f"CSPNetORB adapter: hidden_dim={arch_h} num_layers={arch_l}")
             print(f"Trainable params: {counts['trainable']:,} ({counts['trainable_pct']:.2f}%)")
             print(f"Frozen params:    {counts['frozen']:,}")
     else:
-        model = CSPDiffusion(device=dev).to(dev)
+        model = CSPDiffusion(
+            device=dev, decoder=CSPNet(hidden_dim=arch_h, num_layers=arch_l)
+        ).to(dev)
         params_to_train = list(model.parameters())
         if is_main:
+            print(f"CSPNet: hidden_dim={arch_h} num_layers={arch_l}")
             print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
 
     if is_ddp:
@@ -181,7 +238,7 @@ def train(
         ckpt_data = torch.load(resume_path, map_location=dev, weights_only=False)
         if isinstance(ckpt_data, dict) and "model_state_dict" in ckpt_data:
             if model_type == "orb":
-                model.decoder.load_state_dict(ckpt_data["model_state_dict"])
+                _load_adapter_state_dict(model.decoder, ckpt_data["model_state_dict"])
             else:
                 model.load_state_dict(ckpt_data["model_state_dict"])
             if "optimizer_state_dict" in ckpt_data:
@@ -196,7 +253,7 @@ def train(
                 )
         elif isinstance(ckpt_data, dict):
             if model_type == "orb":
-                model.decoder.load_state_dict(ckpt_data)
+                _load_adapter_state_dict(model.decoder, ckpt_data)
             else:
                 model.load_state_dict(ckpt_data)
             if is_main:
@@ -211,7 +268,7 @@ def train(
         ckpt = {
             "epoch": epoch_idx + 1,
             "model_type": model_type,
-            "model_state_dict": model.decoder.state_dict() if model_type == "orb" else model.state_dict(),
+            "model_state_dict": _adapter_state_dict(model.decoder) if model_type == "orb" else model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "train_loss": train_loss_val,
@@ -224,6 +281,21 @@ def train(
         torch.save(ckpt, tmp_p)
         tmp_p.replace(p)
         print(f"Saved checkpoint (epoch {epoch_idx + 1}) to {ckpt_path}")
+
+        # Track the best validation loss independently of W&B: the caller uses it
+        # to decide whether an evaluation improved, so tying it to the logger
+        # would leave it at infinity for every run without --wandb.
+        is_best = (
+            val_loss_val is not None
+            and not np.isnan(val_loss_val)
+            and val_loss_val < best_val_loss
+        )
+        if is_best:
+            best_val_loss = val_loss_val
+            best_p = p.with_name(f"{p.stem}_best{p.suffix}")
+            torch.save(ckpt, best_p.with_suffix(".tmp"))
+            best_p.with_suffix(".tmp").replace(best_p)
+            print(f"  new best val loss {val_loss_val:.4f} -> also saved {best_p.name}")
 
         # Upload checkpoint as a W&B Artifact for portability
         if wandb_run is not None:
@@ -241,9 +313,7 @@ def train(
             )
             artifact.add_file(str(p))
             aliases = [f"epoch-{epoch_idx + 1}", "latest"]
-            is_best = val_loss_val is not None and val_loss_val < best_val_loss
             if is_best:
-                best_val_loss = val_loss_val
                 aliases.append("best")
             wandb_run.log_artifact(artifact, aliases=aliases)
             print(f"Uploaded checkpoint artifact to W&B (aliases: {aliases})")
@@ -269,6 +339,9 @@ def train(
             "config": {
                 "model_type": model_type,
                 "orb_model": orb_model,
+                "use_orb_node_features": use_orb_node_features,
+                "enforce_zero_force": enforce_zero_force,
+                "force_residual": force_residual,
                 "batch_size": batch_size,
                 "world_size": world_size,
                 "effective_batch_size": batch_size * world_size,
@@ -278,6 +351,10 @@ def train(
                 "num_layers": num_layers,
                 "max_train_samples": max_train_samples,
                 "max_test_samples": max_test_samples,
+                "max_e_hull": max_e_hull,
+                "max_atoms": max_atoms,
+                "hidden_dim_effective": arch_h,
+                "num_layers_effective": arch_l,
             },
         }
         if resume_wandb_id:
@@ -303,15 +380,15 @@ def train(
     # In DDP, avoid race conditions during initial dataset cache extraction
     if is_ddp:
         if is_main:
-            train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples)
+            train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         dist.barrier()
         if not is_main:
-            train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples)
+            train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         dist.barrier()
         train_sampler = DistributedSampler(train_set, shuffle=True, drop_last=True)
         train_loader = DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, **loader_kwargs)
     else:
-        train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples)
+        train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         train_sampler = None
         train_loader = DataLoader(train_set, shuffle=True, batch_size=batch_size, **loader_kwargs)
 
@@ -322,13 +399,13 @@ def train(
     if test_csv and Path(test_csv).exists():
         if is_ddp:
             if is_main:
-                test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples)
+                test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
             dist.barrier()
             if not is_main:
-                test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples)
+                test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
             dist.barrier()
         else:
-            test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples)
+            test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         test_loader = DataLoader(test_set, shuffle=False, batch_size=batch_size, **loader_kwargs)
         if async_dataloader and dev.type == "cuda":
             test_loader = PrefetchLoader(test_loader, device=dev)
@@ -431,9 +508,20 @@ def train(
                     log_data["match_rate"] = match_rate
                     print(f"Validation Match Rate: {match_rate * 100:.2f}%")
 
-        # Save checkpoint periodically
-        if (epoch + 1) % save_freq == 0 or (epoch + 1) == epochs:
-            save_checkpoint(epoch, avg_loss, log_data.get("val_loss"))
+        # Save on the periodic schedule, and additionally on any evaluation that
+        # improves validation loss. Without the second condition the "best"
+        # alias could only ever land on epochs where the save and eval schedules
+        # coincide -- every lcm(save_freq, eval_freq) epochs -- so the true
+        # minimum was usually evaluated and then discarded.
+        current_val_loss = log_data.get("val_loss")
+        due_for_save = (epoch + 1) % save_freq == 0 or (epoch + 1) == epochs
+        val_improved = (
+            current_val_loss is not None
+            and not np.isnan(current_val_loss)
+            and current_val_loss < best_val_loss
+        )
+        if due_for_save or val_improved:
+            save_checkpoint(epoch, avg_loss, current_val_loss)
 
         # Check for interrupt / stop request across ranks
         if is_ddp:
@@ -469,14 +557,45 @@ def main() -> None:
     parser.add_argument("--train_csv", type=str, default="train.csv", help="Path to training CSV")
     parser.add_argument("--test_csv", type=str, default="test.csv", help="Path to test CSV")
     parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
-    parser.add_argument("--orb_model", type=str, default="orb-v2", help="Pretrained ORB model variant")
+    parser.add_argument(
+        "--orb_model",
+        type=str,
+        default="orb-v3",
+        help="Pretrained ORB backbone: an alias (orb-v3, orb-v3-direct-omat, orb-v2, ...) "
+        "or an orb_models.pretrained loader name (e.g. orb_v3_direct_20_mpa)",
+    )
     parser.add_argument("--mock_orb", action="store_true", help="Use lightweight mock ORB backbone")
+    parser.add_argument(
+        "--no_orb_node_features",
+        dest="use_orb_node_features",
+        action="store_false",
+        help="Condition only on ORB forces and stress, without its learned atomic representations",
+    )
+    parser.set_defaults(use_orb_node_features=True)
+    parser.add_argument(
+        "--enforce_zero_force",
+        action="store_true",
+        help="Constrain the coordinate score to gamma*f_frac + v_perp (gamma>0); "
+        "guarantees score=0 only when the ORB force is 0, but permits one direction along the force",
+    )
+    parser.add_argument(
+        "--force_residual",
+        action="store_true",
+        help="Add a time-gated ORB force residual to the coordinate score instead of the hard constraint",
+    )
+
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--eval_freq", type=int, default=10, help="Evaluation frequency in epochs")
-    parser.add_argument("--hidden_dim", type=int, default=128, help="Adapter hidden dimension")
-    parser.add_argument("--num_layers", type=int, default=2, help="Number of adapter layers")
+    parser.add_argument(
+        "--hidden_dim", type=int, default=None,
+        help="Denoiser hidden dimension (default: 128 for --model orb, 512 for --model cspnet)",
+    )
+    parser.add_argument(
+        "--num_layers", type=int, default=None,
+        help="Number of denoiser layers (default: 2 for --model orb, 6 for --model cspnet)",
+    )
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--ckpt_path", type=str, default="diffcsp_ckpt.pt", help="Checkpoint save path")
     parser.add_argument(
@@ -493,6 +612,19 @@ def main() -> None:
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name")
     parser.add_argument("--max_train_samples", type=int, default=None, help="Max training samples")
     parser.add_argument("--max_test_samples", type=int, default=None, help="Max test samples")
+    parser.add_argument(
+        "--cache_dir", type=str, default=None,
+        help="Directory for the preprocessed dataset cache (default: alongside the CSV)",
+    )
+    parser.add_argument(
+        "--max_e_hull", type=float, default=None,
+        help="Keep only structures with energy_above_hull <= this value, in eV",
+    )
+    parser.add_argument(
+        "--max_atoms", type=int, default=None,
+        help="Drop structures whose conventional cell exceeds this many atoms "
+        "(CSPNet's intra-cell graph is fully connected, so cost grows as N^2)",
+    )
     parser.add_argument("--eval_sample", action="store_true", help="Run full generative sampling validation")
     parser.add_argument("--num_workers", type=int, default=2, help="Number of DataLoader worker processes per rank")
     parser.add_argument("--prefetch_factor", type=int, default=2, help="DataLoader prefetch factor")
@@ -511,6 +643,9 @@ def main() -> None:
         model_type=args.model,
         orb_model=args.orb_model,
         mock_orb=args.mock_orb,
+        use_orb_node_features=args.use_orb_node_features,
+        enforce_zero_force=args.enforce_zero_force,
+        force_residual=args.force_residual,
         batch_size=args.batch_size,
         lr=args.lr,
         epochs=args.epochs,
@@ -526,6 +661,9 @@ def main() -> None:
         wandb_entity=args.wandb_entity,
         max_train_samples=args.max_train_samples,
         max_test_samples=args.max_test_samples,
+        cache_dir=args.cache_dir,
+        max_e_hull=args.max_e_hull,
+        max_atoms=args.max_atoms,
         eval_sample=args.eval_sample,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
