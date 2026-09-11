@@ -96,7 +96,7 @@ def generate_structures(
     wyckoff_file: str,
     ckpt_path: str = "diffcsp_ckpt.pt",
     model_type: str = "orb",
-    orb_model: str = "orb-v2",
+    orb_model: str = "orb-v3",
     mock_orb: bool = False,
     batch_size: int = 256,
     hidden_dim: int = 128,
@@ -150,7 +150,10 @@ def generate_structures(
         if "decoder.coord_out.weight" in state_dict or "decoder.csp_layers.0.edge_mlp.0.weight" in state_dict:
             model.load_state_dict(state_dict, strict=False)
         elif hasattr(model, "decoder"):
-            model.decoder.load_state_dict(state_dict, strict=False)
+            model.decoder.load_state_dict(
+                {k: v for k, v in state_dict.items() if not k.startswith("orb_backbone.")},
+                strict=False,
+            )
         print(f"Loaded checkpoint from {ckpt_file}")
     else:
         print(f"Warning: Checkpoint '{ckpt_file}' not found. Generating with initialized weights.")
@@ -209,7 +212,13 @@ def main() -> None:
     parser.add_argument("wyckoff_file", type=str, help="Path to input Wyckoff representation file")
     parser.add_argument("--ckpt_path", type=str, default="test_ckpt.pt", help="Path to checkpoint")
     parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
-    parser.add_argument("--orb_model", type=str, default="orb-v2", help="ORB model variant")
+    parser.add_argument(
+        "--orb_model",
+        type=str,
+        default="orb-v3",
+        help="Pretrained ORB backbone: an alias (orb-v3, orb-v3-direct-omat, orb-v2, ...) "
+        "or an orb_models.pretrained loader name (e.g. orb_v3_direct_20_mpa)",
+    )
     parser.add_argument("--mock_orb", action="store_true", help="Use lightweight mock ORB backbone")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
     parser.add_argument("--hidden_dim", type=int, default=128, help="Adapter hidden dimension")

@@ -14,8 +14,18 @@ from diffcsp.models.orb_wrapper import OrbBackboneWrapper, build_orb_backbone
 class CSPNetORB(nn.Module):
     """Lightweight Denoising Adapter on top of a frozen ORB MLIP Backbone.
 
-    Enforces by design that the coordinate denoising step can be zero
-    ONLY IF the ORB forces are zero: S = 0 ==> F = 0.
+    By default the potential enters purely as conditioning: forces, stress and
+    the backbone's learned atomic representations are features of the fusion
+    MLP, and the coordinate score is an unconstrained head, as in CSPNet. The
+    network is then free to move with or against the ORB force, which is what
+    lets the diffusion choose an energy basin rather than follow the potential
+    downhill (or, with the constraint as originally signed, uphill).
+
+    ``enforce_zero_force_condition`` restores the hard constraint
+    ``score = gamma * f_frac + v_perp`` with ``gamma > 0``, which guarantees
+    ``score = 0 ==> f_frac = 0`` but can express only one direction along the
+    force. ``use_force_residual`` restores the softer ``score = v_coord +
+    sigmoid(t) * f_frac``. Both are off by default and kept for comparison.
     """
 
     def __init__(
@@ -29,8 +39,8 @@ class CSPNetORB(nn.Module):
         dis_emb: str = "sin",
         num_freqs: int = 64,
         pooling: str = "mean",
-        use_force_residual: bool = True,
-        enforce_zero_force_condition: bool = True,
+        use_force_residual: bool = False,
+        enforce_zero_force_condition: bool = False,
         enforce_zero_stress_condition: bool = False,
         gamma_min: float = 1e-3,
         orb_node_dim: int = 256,
@@ -53,7 +63,7 @@ class CSPNetORB(nn.Module):
         # 1. Frozen ORB Backbone
         if orb_backbone is None:
             self.orb_backbone = build_orb_backbone(
-                model_name="orb-v2",
+                model_name="orb-v3",
                 device=device,
                 use_mock=use_mock,
                 node_dim=orb_node_dim,

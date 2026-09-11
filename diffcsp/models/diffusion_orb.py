@@ -16,12 +16,13 @@ class CSPDiffusionORB(CSPDiffusion):
     def __init__(
         self,
         device: str | torch.device = "cpu",
-        orb_model_name: str = "orb-v2",
+        orb_model_name: str = "orb-v3",
         use_mock_orb: bool = False,
+        use_orb_node_features: bool = True,
         hidden_dim: int = 128,
         num_layers: int = 2,
-        use_force_residual: bool = True,
-        enforce_zero_force_condition: bool = True,
+        use_force_residual: bool = False,
+        enforce_zero_force_condition: bool = False,
         enforce_zero_stress_condition: bool = False,
         gamma_min: float = 1e-3,
         orb_node_dim: int = 256,
@@ -38,6 +39,7 @@ class CSPDiffusionORB(CSPDiffusion):
             use_mock=use_mock_orb,
             node_dim=orb_node_dim,
             graph_dim=orb_graph_dim,
+            use_node_features=use_orb_node_features,
         )
 
         decoder = CSPNetORB(
