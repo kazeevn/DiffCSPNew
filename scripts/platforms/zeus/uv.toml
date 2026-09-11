@@ -7,20 +7,10 @@
 # The root uv.toml is gitignored, because every setting below is true of this
 # machine only. See docs/platforms/zeus/environment.md.
 
-# torch, spglib, torch-scatter and torch-sparse are built on this box, for this
-# box (sm89, -march=native, MKL), and served from a flat directory index.
-# PyPI remains the default index for everything else.
 [[index]]
 name = "zeus"
 url = "file:///mnt/hdd/torch_wheels/"
 format = "flat"
-
-# The official PyPI GPU wheels declare `triton==3.6.0; platform_system ==
-# "Linux"` themselves; a torch built from source omits that pin, so on zeus
-# nothing constrains triton and a resolver is free to take 3.7.x, which pairs
-# with a newer torch than ours. 3.6 is the series torch 2.11 targets.
-# The `compile` extra is what puts triton in the graph at all.
-constraint-dependencies = ["triton ==3.6.0"]
 
 # A uv.toml REPLACES the [tool.uv] table in pyproject.toml rather than merging
 # with it, so pyproject's copy of this is inert here and must be repeated.
