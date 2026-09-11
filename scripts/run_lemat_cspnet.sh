@@ -8,15 +8,17 @@
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-cd /home/kna/DiffCSPNew
-exec uv run python train.py \
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+exec uv run diffcsp-train \
   --model cspnet \
   --hidden_dim 512 --num_layers 6 \
   --train_csv /home/kna/WyckoffTransformer/data/lemat_bulk_fmax1/train.csv.gz \
   --test_csv  /home/kna/WyckoffTransformer/data/lemat_bulk_fmax1/val.csv.gz \
   --max_e_hull 0.1 \
   --max_atoms 128 \
-  --cache_dir /home/kna/DiffCSPNew/cache/lemat_bulk_fmax1 \
+  --cache_dir cache/lemat_bulk_fmax1 \
   --batch_size 256 \
   --lr 1e-3 \
   --epochs 20 \
@@ -25,5 +27,5 @@ exec uv run python train.py \
   --num_workers 8 \
   --prefetch_factor 4 \
   --resume auto \
-  --ckpt_path cspnet_lemat_fmax1_ehull0p1.pt \
+  --ckpt_path runs/lemat_cspnet/cspnet_lemat_fmax1_ehull0p1.pt \
   --wandb --wandb_project diffcsp --wandb_entity symmetry-advantage

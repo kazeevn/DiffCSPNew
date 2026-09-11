@@ -12,7 +12,7 @@ training-stability issues and proposed fixes.
 
 ## 1. Architecture & Package Structure
 
-The codebase is organized as a modular Python package (`diffcsp`) with backward-compatible root script facades:
+The codebase is organized as a modular Python package (`diffcsp`) with clean entrypoints:
 
 ```
 diffcsp/
@@ -35,42 +35,41 @@ diffcsp/
 └── cli/                # Structured command-line interfaces
     ├── train.py           # Unified training CLI (both CSPNet and ORB adapter)
     └── inference.py       # Unified structure generation CLI
-bench/                  # Structure-prediction benchmark harness (see docs/benchmark.md)
+data/                   # Dataset repository (data/mp-20/, data/carbon-24/, etc.)
+scripts/                # Training and utility scripts
+├── platforms/          # Platform-specific scripts (e.g. iapetus, zeus)
+bench/                  # Structure-prediction benchmark harness (outputs to runs/bench/)
+runs/                   # Experiment artifacts, checkpoints, and logs (gitignored)
 docs/                   # Benchmark results and training notes
 tests/                  # pytest suite (27 unit & integration tests)
 ```
 
 ---
 
-## 2. Environment & Container Execution
+## 2. Environment & Execution
 
-On machines with legacy Kepler (`sm_35`) and Maxwell (`sm_50`) GPUs (Tesla K20c / GTX 750 Ti), code is executed within the custom-compiled PyTorch 2.14 Docker container from `/home/kna/pytorch-research` (`pytorch:2.14.0-cuda11.8-py312-universal`).
-
-A convenience script [`run_container.sh`](run_container.sh) is provided in the repository root:
+We use **`uv`** for dependency and environment management.
 
 ```bash
-# Run tests
-./run_container.sh pytest
+# Sync environment with all dependencies (including dev, orb, wandb)
+uv sync --all-extras
 
-# Run linting and formatting
-./run_container.sh ruff check diffcsp/ tests/
-./run_container.sh ruff format --check diffcsp/ tests/
-
-# Run interactive bash
-./run_container.sh bash
+# Run test suite
+uv run pytest
 ```
 
-Alternatively, run directly with Docker:
-```bash
-docker run --rm \
-  --runtime=nvidia \
-  -e NVIDIA_VISIBLE_DEVICES=all \
-  --ipc=host \
-  -v "$(pwd):/workspace" \
-  -w /workspace \
-  pytorch:2.14.0-cuda11.8-py312-universal \
-  <command>
-```
+### Platform-specific Setup
+
+Platform configurations and convenience scripts are housed under `scripts/platforms/<platform>`:
+
+- **Zeus**: Host-specific `uv.toml` and initialization script:
+  ```bash
+  scripts/platforms/zeus/env_init.sh
+  ```
+- **Iapetus**: PyTorch 2.14 universal container execution:
+  ```bash
+  scripts/platforms/iapetus/run_container.sh uv run pytest
+  ```
 
 ---
 
@@ -79,20 +78,20 @@ docker run --rm \
 The codebase includes an extensive suite of automated tests verifying numerical operations, symmetry constraints, model forward passes, diffusion sampling, and CLI interfaces:
 
 ```bash
-./run_container.sh pytest
+uv run pytest
 ```
 
 To run individual test modules:
 ```bash
-./run_container.sh pytest tests/test_matrix.py
-./run_container.sh pytest tests/test_crystal_family.py
-./run_container.sh pytest tests/test_models.py
-./run_container.sh pytest tests/test_diffusion.py
+uv run pytest tests/test_matrix.py
+uv run pytest tests/test_crystal_family.py
+uv run pytest tests/test_models.py
+uv run pytest tests/test_diffusion.py
 ```
 
 To run specific tests with verbose output:
 ```bash
-./run_container.sh pytest -v -k "orb or diffusion"
+uv run pytest -v -k "orb or diffusion"
 ```
 
 ---
@@ -103,17 +102,17 @@ Generate periodic crystal structures from Wyckoff representations (`.json` or `.
 
 ### With Frozen ORB MLIP Adapter:
 ```bash
-./run_container.sh python inference.py WyckoffTransformer_mp_20.json.gz \
+uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
   --model orb \
-  --ckpt_path orb_diffcsp_ckpt.pt \
+  --ckpt_path runs/vuvt0kab/orb_v3_diffcsp_mp20_opt3.pt \
   --device cuda
 ```
 
 ### With Standard DiffCSP++ (CSPNet):
 ```bash
-./run_container.sh python inference.py WyckoffTransformer_mp_20.json.gz \
+uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
   --model cspnet \
-  --ckpt_path test_ckpt.pt \
+  --ckpt_path data/mp-20/test_ckpt.pt \
   --device cuda
 ```
 
@@ -126,7 +125,7 @@ import json
 from monty.json import MontyDecoder
 
 decoder = MontyDecoder()
-with gzip.open("WyckoffTransformer_mp_20.diffcsp-orb.json.gz", "rt") as f:
+with gzip.open("data/mp-20/WyckoffTransformer_mp_20.diffcsp-orb.json.gz", "rt") as f:
     data_raw = json.load(f)
 structures = [decoder.process_decoded(d) for d in data_raw]
 print(f"Loaded {len(structures)} generated pymatgen structures.")
@@ -138,11 +137,11 @@ print(f"Loaded {len(structures)} generated pymatgen structures.")
 
 ### Train Frozen ORB MLIP Adapter:
 ```bash
-./run_container.sh python train.py \
+uv run diffcsp-train \
   --model orb \
   --orb_model orb-v3 \
-  --train_csv train.csv \
-  --test_csv test.csv \
+  --train_csv data/mp-20/train.csv \
+  --test_csv data/mp-20/test.csv \
   --batch_size 64 \
   --epochs 100 \
   --lr 1e-3 \
@@ -151,19 +150,25 @@ print(f"Loaded {len(structures)} generated pymatgen structures.")
 
 For fast local verification or testing without GPU weights, pass `--mock_orb`:
 ```bash
-./run_container.sh python train.py --model orb --mock_orb --epochs 5 --batch_size 16 --device cpu
+uv run diffcsp-train --model orb --mock_orb --epochs 5 --batch_size 16 --device cpu
 ```
 
 ### Train Standard DiffCSP++ (CSPNet):
 ```bash
-./run_container.sh python train.py \
+uv run diffcsp-train \
   --model cspnet \
-  --train_csv train.csv \
-  --test_csv test.csv \
+  --train_csv data/mp-20/train.csv \
+  --test_csv data/mp-20/test.csv \
   --batch_size 256 \
   --epochs 500 \
   --lr 1e-3 \
   --device cuda
+```
+
+Or run the predefined scripts under `scripts/`:
+```bash
+scripts/run_full_training.sh
+scripts/run_lemat_cspnet.sh
 ```
 
 ### Dataset options
@@ -173,7 +178,7 @@ interrupted preprocessing run resumes from the shards already written rather tha
 restarting. A complete shard set loads without re-reading the source CSV.
 
 ```bash
-python train.py --model cspnet \
+uv run diffcsp-train --model cspnet \
   --train_csv data/train.csv.gz --test_csv data/val.csv.gz \
   --max_e_hull 0.1 \        # keep structures within 0.1 eV of the hull
   --max_atoms 128 \         # drop larger conventional cells (see below)
@@ -212,23 +217,17 @@ the force, and training drives `gamma` to its floor. See `docs/benchmark.md`.
 
 ## 6. CLI Execution
 
-The CLI tools can be invoked through multiple equivalent methods:
+The CLI tools can be invoked via:
 
-1. **Directly via Python scripts in root:**
+1. **Installed package entrypoints:**
    ```bash
-   ./run_container.sh python train.py --model orb --epochs 100
-   ./run_container.sh python inference.py WyckoffTransformer_mp_20.json.gz --model orb
+   uv run diffcsp-train --model orb --epochs 100
+   uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz --model orb
    ```
 
-2. **Via standard Python module execution:**
+2. **Standard Python module execution:**
    ```bash
-   ./run_container.sh python -m diffcsp.cli.train --model orb --epochs 100
-   ./run_container.sh python -m diffcsp.cli.inference WyckoffTransformer_mp_20.json.gz --model orb
-   ```
-
-3. **Via installed package entrypoints:**
-   ```bash
-   ./run_container.sh diffcsp-train --model orb --epochs 100
-   ./run_container.sh diffcsp-inference WyckoffTransformer_mp_20.json.gz --model orb
+   uv run python -m diffcsp.cli.train --model orb --epochs 100
+   uv run python -m diffcsp.cli.inference data/mp-20/WyckoffTransformer_mp_20.json.gz --model orb
    ```
 

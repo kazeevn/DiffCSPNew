@@ -6,13 +6,13 @@ import os
 import random
 import signal
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core import Lattice, Structure
-from typing import Any
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader, PrefetchLoader
@@ -124,8 +124,8 @@ def set_random_seed(seed: int = 17) -> None:
 
 
 def train(
-    train_csv: str = "train.csv",
-    test_csv: str | None = "test.csv",
+    train_csv: str = "data/mp-20/train.csv",
+    test_csv: str | None = "data/mp-20/test.csv",
     model_type: str = "orb",
     orb_model: str = "orb-v3",
     mock_orb: bool = False,
@@ -554,8 +554,8 @@ def train(
 def main() -> None:
     """CLI entrypoint for training."""
     parser = argparse.ArgumentParser(description="DiffCSP++ Training CLI")
-    parser.add_argument("--train_csv", type=str, default="train.csv", help="Path to training CSV")
-    parser.add_argument("--test_csv", type=str, default="test.csv", help="Path to test CSV")
+    parser.add_argument("--train_csv", type=str, default="data/mp-20/train.csv", help="Path to training CSV")
+    parser.add_argument("--test_csv", type=str, default="data/mp-20/test.csv", help="Path to test CSV")
     parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
     parser.add_argument(
         "--orb_model",

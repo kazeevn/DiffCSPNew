@@ -1,6 +1,5 @@
 """Unit tests for smooth conservative repulsive potential."""
 
-import pytest
 import torch
 
 from diffcsp.models.repulsion import SmoothRepulsivePotential, compute_crystal_repulsion

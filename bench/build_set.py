@@ -56,10 +56,10 @@ def _one(cif: str, mp_id: str, max_atoms=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--test_csv", default="test.csv")
+    ap.add_argument("--test_csv", default="data/mp-20/test.csv")
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", default="bench/benchset.pkl")
+    ap.add_argument("--out", default="runs/bench/mp20/benchset.pkl")
     ap.add_argument("--max_e_hull", type=float, default=None)
     ap.add_argument("--max_atoms", type=int, default=None)
     a = ap.parse_args()

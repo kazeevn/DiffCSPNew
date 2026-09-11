@@ -28,12 +28,12 @@ def _score(gt, pred, stol, angle_tol, ltol):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--inits", default="bench/inits.pkl")
+    ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--preds", nargs="+", required=True, help="label=path.pkl")
     ap.add_argument("--stol", type=float, default=0.5)
     ap.add_argument("--angle_tol", type=float, default=10.0)
     ap.add_argument("--ltol", type=float, default=0.3)
-    ap.add_argument("--out", default="bench/results.pkl")
+    ap.add_argument("--out", default="runs/bench/mp20/results.pkl")
     a = ap.parse_args()
 
     with open(a.inits, "rb") as f:
@@ -65,6 +65,7 @@ def main():
             "per_entry": {i: per_entry[i] for i in range(n)},
         }
 
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, "wb") as f:
         pickle.dump(table, f)
 

@@ -19,11 +19,13 @@ if [ -d "$HOME/.cache" ]; then
   EXTRA_ARGS+=(-v "$HOME/.cache:/home/kna/.cache" -v "$HOME/.cache:/root/.cache")
 fi
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+
 exec docker run --rm \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \
   --ipc=host \
-  -v "$(pwd):/workspace" \
+  -v "$repo_root:/workspace" \
   -w /workspace \
   "${EXTRA_ARGS[@]}" \
   pytorch:2.14.0-cuda11.8-py312-universal \

@@ -4,11 +4,15 @@
 #  all enter as conditioning features).
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES=0
-exec uv run python train.py \
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+exec uv run diffcsp-train \
   --model orb \
   --orb_model orb-v3 \
-  --train_csv train.csv \
-  --test_csv test.csv \
+  --train_csv data/mp-20/train.csv \
+  --test_csv data/mp-20/test.csv \
   --hidden_dim 128 \
   --num_layers 2 \
   --batch_size 128 \
@@ -18,5 +22,5 @@ exec uv run python train.py \
   --save_freq 25 \
   --num_workers 4 \
   --prefetch_factor 4 \
-  --ckpt_path orb_v3_diffcsp_mp20_opt3.pt \
+  --ckpt_path runs/mp20_orb_v3/orb_v3_diffcsp_mp20_opt3.pt \
   --wandb --wandb_project diffcsp --wandb_entity symmetry-advantage

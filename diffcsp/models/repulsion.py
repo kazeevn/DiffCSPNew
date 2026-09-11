@@ -14,7 +14,6 @@ with F(r_c) = 0 and F'(r_c) = 0, ensuring a C^2 smooth transition into
 the MLIP regime where all atoms are at physical bonding distances.
 """
 
-from typing import Any
 import torch
 import torch.nn as nn
 from ase.data import covalent_radii

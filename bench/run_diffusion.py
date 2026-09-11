@@ -89,7 +89,7 @@ def to_structures(out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--regime", choices=["orb", "cspnet"], required=True)
-    ap.add_argument("--inits", default="bench/inits.pkl")
+    ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--batch_size", type=int, default=128)
     ap.add_argument("--hidden_dim", type=int, default=128)

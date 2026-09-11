@@ -28,10 +28,10 @@ def _draw(rep: dict, seed: int):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--benchset", default="bench/benchset.pkl")
+    ap.add_argument("--benchset", default="runs/bench/mp20/benchset.pkl")
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--out", default="bench/inits.pkl")
+    ap.add_argument("--out", default="runs/bench/mp20/inits.pkl")
     a = ap.parse_args()
 
     with open(a.benchset, "rb") as f:

@@ -1,34 +1,34 @@
-new_crystals
-wandb
+# Python / Environment
 .env
-__pycache__
-*.pth
-cache
-*.json.gz
-poetry.lock
-result.json
-test_ckpt.pt.bak*
-test_pilot_ckpt.pt
-WyckoffTransformer_mp_20.json
-.pytest_cache/
-.ruff_cache/
 .venv/
 .venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
 dist/
 build/
 *.egg-info/
 
-# benchmark intermediates: large pickles, regenerable from bench/run_*.sh
-bench/*.pkl
+# Machine-specific platform config in repo root (source of truth is in scripts/platforms/)
+/uv.toml
 
-# run logs
+# Experiments, training runs, logs, and artifacts
+runs/
+wandb/
 *.log
-
-# trained checkpoints -- reproducible outputs, archived as W&B artifacts.
-# test_ckpt.pt is tracked deliberately: it is the reference DiffCSP++ release.
-cspnet_lemat_*.pt
-orb_v3_diffcsp_*.pt
-*_best.pt
-
-# W&B artifact downloads
 artifacts/
+new_crystals/
+
+# Cache directories and graph caches
+cache/
+*.pth
+
+# Data files (keep tracked data/mp-20/train.csv, test.csv, test_ckpt.pt)
+data/**/*.pth
+data/**/*.json
+data/**/*.json.gz
+
+# Checkpoints
+*.pt
+!data/mp-20/test_ckpt.pt

@@ -35,12 +35,12 @@ def _detach(structure):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--inits", default="bench/inits.pkl")
+    ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--orb_model", default="orb_v3_direct_20_mpa")
     ap.add_argument("--fmax", type=float, default=0.05)
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--no_fix_symmetry", action="store_true")
-    ap.add_argument("--out", default="bench/pred_relax.pkl")
+    ap.add_argument("--out", default="runs/bench/mp20/pred_relax.pkl")
     a = ap.parse_args()
 
     from ase.filters import FrechetCellFilter

@@ -8,6 +8,7 @@ the search space.
 """
 import argparse, pickle, warnings
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
@@ -33,9 +34,9 @@ def representation_dof(rep: dict) -> tuple[int, int]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default="bench/results.pkl")
-    ap.add_argument("--inits", default="bench/inits.pkl")
-    ap.add_argument("--out", default="bench/dof_table.pkl")
+    ap.add_argument("--results", default="runs/bench/mp20/results.pkl")
+    ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
+    ap.add_argument("--out", default="runs/bench/mp20/dof_table.pkl")
     a = ap.parse_args()
 
     table = pickle.load(open(a.results, "rb"))
@@ -91,6 +92,7 @@ def main():
         v = r["best"].get("vanilla-diffcsp", float("nan")) - r["best"].get("orb-relax", float("nan"))
         print(f"   DoF {r['dof']:>4}: orb-diffcsp {o:+6.1f}   vanilla {v:+6.1f}")
 
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     pickle.dump({"rows": rows, "labels": labels, "wdof": wdof, "ldof": ldof,
                  "natoms": natoms, "best": best, "trial": trial}, open(a.out, "wb"))
     print(f"\nwrote {a.out}")

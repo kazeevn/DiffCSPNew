@@ -6,8 +6,8 @@ import json
 import logging
 import random
 from pathlib import Path
-
 from typing import Any
+
 import numpy as np
 import torch
 from pymatgen.core import Structure
@@ -94,7 +94,7 @@ def set_random_seed(seed: int = 42) -> None:
 
 def generate_structures(
     wyckoff_file: str,
-    ckpt_path: str = "diffcsp_ckpt.pt",
+    ckpt_path: str = "data/mp-20/test_ckpt.pt",
     model_type: str = "orb",
     orb_model: str = "orb-v3",
     mock_orb: bool = False,
@@ -210,7 +210,7 @@ def main() -> None:
     """CLI entrypoint for structure generation."""
     parser = argparse.ArgumentParser(description="DiffCSP++ Inference CLI")
     parser.add_argument("wyckoff_file", type=str, help="Path to input Wyckoff representation file")
-    parser.add_argument("--ckpt_path", type=str, default="test_ckpt.pt", help="Path to checkpoint")
+    parser.add_argument("--ckpt_path", type=str, default="data/mp-20/test_ckpt.pt", help="Path to checkpoint")
     parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
     parser.add_argument(
         "--orb_model",
