@@ -96,6 +96,12 @@ def main():
     ap.add_argument("--num_layers", type=int, default=None)
     ap.add_argument("--orb_model", default="orb-v3")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--no-orbit-average",
+        action="store_true",
+        help="cspnet regime only: use the anchor replica's score instead of the orbit mean "
+             "(ablation for docs/asymmetric-unit-deficit.md)",
+    )
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -154,7 +160,8 @@ def main():
     preds = []
     with torch.no_grad():
         for batch in tqdm(loader, desc=f"sampling ({a.regime})"):
-            out, _ = model.sample(batch.to(dev), disable_progress=True)
+            kw = {"orbit_average": False} if (a.no_orbit_average and a.regime == "cspnet") else {}
+            out, _ = model.sample(batch.to(dev), disable_progress=True, **kw)
             preds.extend(to_structures(out))
 
     assert len(preds) == len(draws), f"{len(preds)} predictions for {len(draws)} draws"

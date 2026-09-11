@@ -109,9 +109,24 @@ class CSPDiffusion(nn.Module):
 
     @torch.no_grad()
     def sample(
-        self, batch: Any, step_lr: float = 1e-5, disable_progress: bool = False
+        self,
+        batch: Any,
+        step_lr: float = 1e-5,
+        disable_progress: bool = False,
+        orbit_average: bool = True,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        """Predictor-Corrector sampling algorithm for crystal structure generation."""
+        """Predictor-Corrector sampling algorithm for crystal structure generation.
+
+        Args:
+            batch: PyTorch Geometric Data/Batch instance.
+            step_lr: Langevin corrector step scale.
+            disable_progress: Suppresses the per-step progress bar.
+            orbit_average: If True, the score is averaged over the atoms of each
+                Wyckoff orbit before the update. If False, only the anchor
+                replica's score is used -- the single viewpoint the asymmetric
+                unit model has. Ablation switch for
+                ``docs/asymmetric-unit-deficit.md``; leave True for sampling.
+        """
         batch_size = batch.batch_size if hasattr(batch, "batch_size") else batch.num_graphs
         x_t = torch.rand([batch.num_nodes, 3], device=self.device)
         crys_fam_t = torch.randn([batch_size, 6], device=self.device)
@@ -170,7 +185,11 @@ class CSPDiffusion(nn.Module):
             pred_x = pred_x * torch.sqrt(sigma_norm_val)
 
             pred_x_proj = torch.einsum("bij, bj -> bi", batch.ops_inv, pred_x)
-            pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce="mean")[batch.anchor_index]
+            if orbit_average:
+                pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce="mean")
+                pred_x_anchor = pred_x_anchor[batch.anchor_index]
+            else:
+                pred_x_anchor = pred_x_proj[batch.anchor_index]
             pred_x = (batch.ops[:, :3, :3] @ pred_x_anchor.unsqueeze(-1)).squeeze(-1)
 
             x_half = cur_x - step_size * pred_x + std_x * rand_x
@@ -205,7 +224,11 @@ class CSPDiffusion(nn.Module):
             crys_fam_next = self.crystal_family.proj_k_to_spacegroup(crys_fam_next, batch.spacegroup)
 
             pred_x_proj = torch.einsum("bij, bj -> bi", batch.ops_inv, pred_x)
-            pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce="mean")[batch.anchor_index]
+            if orbit_average:
+                pred_x_anchor = scatter(pred_x_proj, batch.anchor_index, dim=0, reduce="mean")
+                pred_x_anchor = pred_x_anchor[batch.anchor_index]
+            else:
+                pred_x_anchor = pred_x_proj[batch.anchor_index]
             pred_x = (batch.ops[:, :3, :3] @ pred_x_anchor.unsqueeze(-1)).squeeze(-1)
 
             x_next = x_half - step_size_pred * pred_x + std_x_pred * rand_x

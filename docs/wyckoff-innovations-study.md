@@ -24,8 +24,8 @@ This study implements and benchmarks **Innovations 1 and 2** from `docs/architec
   * **14.14x speedup** on large crystals ($N=48, K=2$ forward pass reduced from 347.7 ms to 24.6 ms).
   * **Up to 32x reduction in graph edges**, completely eliminating the heavy-tailed edge explosion documented in `docs/training-stability.md`.
   * Sampling 2,998 test structures takes only **~7 minutes**.
-* **Statistical Insignificance of the Overall Gap**:
-  The 1.0% best-of-3 difference between vanilla (86.6%) and zero-shot asymmetric Wyckoff (85.6%) represents only 10 structures out of 1,000, well within the finite-sample binomial error margin ($\sigma \approx 1.1\%$).
+* **The Overall Gap Is Small Because the Aggregate Is Saturated** *(revised)*:
+  The 1.0% best-of-3 difference between vanilla (86.6%) and zero-shot asymmetric Wyckoff (85.6%) looks like noise, but an unpaired binomial margin is the wrong test: 58% of the set sits at ~98% match where no regime can differ. Paired per-trial McNemar on the subset that is actually contested -- orbits with replicas, DoF $\ge$ 9 -- gives **+8.1 points to vanilla, p = 4.1e-05**. See [`docs/asymmetric-unit-deficit.md`](asymmetric-unit-deficit.md).
 
 ---
 
@@ -130,9 +130,29 @@ For 583 out of 1,000 crystals (all structures with continuous DoF $\le$ 5):
 
 The overall 1.0% gap between vanilla (86.6%) and zero-shot asymmetric Wyckoff (85.6%) represents only 10 structures in a sample of 1,000, well below the $2\sigma$ statistical threshold ($p > 0.35$).
 
+> **Caveat.** That $p$ comes from an unpaired comparison of a saturated aggregate. The two
+> regimes run on identical draws, so the paired test is the right one, and on the whole set
+> it is significant: **+1.9 points per-trial, 160 vs 104 discordant, p = 6.8e-04**. The
+> equivalence claimed here holds for DoF $\le$ 5 (where it is genuinely a tie or better:
+> -0.8, p = 0.066 in the asymmetric model's favour), not for the set as a whole.
+
 ### 4.2 Why Does Vanilla Retain an Edge on DoF $\ge$ 9?
+
+> **Superseded — see [`docs/asymmetric-unit-deficit.md`](asymmetric-unit-deficit.md).**
+> Explanation 1 below was tested directly and is wrong. Sampling vanilla with orbit
+> score-averaging ablated (`--no-orbit-average`, the anchor replica's score only) costs
+> vanilla **nothing**: 82.4% vs 81.3% per-trial overall, and it still beats the
+> asymmetric model by +9.5 points at DoF $\ge$ 9 (p = 3.5e-06). The deficit is also not a
+> DoF effect. It tracks **orbit multiplicity**: where every orbit has multiplicity 1 the
+> two architectures are the same computation and the gap is +0.6 (p = 0.86); where orbits
+> have replicas and DoF $\ge$ 9 it is +8.1 (p = 4.1e-05). The cause is the loss of
+> *per-replica hidden states*, not of the output average — the anchor's first
+> message-passing step is identical in both graphs, and they diverge only from layer 2 on.
+> Explanation 2 (chemical blindness) stands, and §5.1 of that note documents a real
+> noise mis-specification on oblique projectors.
+
 Dissection of divergent cases revealed that 81.1% of all cases where vanilla succeeds and asymmetric Wyckoff fails reside in the DoF $\ge$ 9 regime (mean DoF 17.8):
-1. **Multiplicity Ensembling in Full-Cell GNNs**:
+1. **Multiplicity Ensembling in Full-Cell GNNs** *(refuted — see the note above)*:
    In vanilla DiffCSP++, all $N$ atoms in the cell are explicit nodes. For an orbit with multiplicity $m$ (e.g. 8, 16, 24), the network outputs $m$ distinct prediction vectors $\Delta \mathbf{x}_j$. Averaging them back onto the anchor reduces score variance by $\sim \frac{1}{\sqrt{m}}$. In Asymmetric Wyckoff, only the single anchor site representation outputs the displacement vector.
 2. **"Chemical Blindness" of Fractional Coordinates**:
    Like vanilla DiffCSP++, Innovation 1 and 2 operate on fractional sinusoids $\sin(2\pi f (x_j - x_i))$ rather than Cartesian Euclidean distances $r_{ij} = \|\mathbf{L}(\mathbf{x}_j - \mathbf{x}_i + \mathbf{n})\|_2$ in Ångströms. In crowded high-DoF structures, this leads to atomic clashing (< 1.5 Å).

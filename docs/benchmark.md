@@ -93,6 +93,12 @@ actually has to determine. The aggregate above hides three different regimes.
 
 Published as an artifact: *Match Rate by Wyckoff DoF*.
 
+DoF is the right axis for these four regimes, but not for the asymmetric-unit model added
+later: its deficit tracks Wyckoff *orbit multiplicity* instead, and vanishes entirely on
+the structures where every orbit has one member. See
+[`asymmetric-unit-deficit.md`](asymmetric-unit-deficit.md) and
+`bench/multiplicity_analysis.py`.
+
 ---
 
 ## Result 2 — LeMat-Bulk test, does more data help?
