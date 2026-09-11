@@ -19,6 +19,8 @@ hardest on the coordinate head. It shows up in the generated structures as too-s
 contacts. The lattice head is unaffected -- it is in fact better than vanilla's.
 
 Two genuine biases *do* exist in the asymmetric-unit code (§5). Neither causes this.
+§7 measures the symmetry gauge the collapse actually discards, and shows why
+WyckoffTransformer's setting augmentation is not the one that would fix it.
 
 ---
 
@@ -238,7 +240,75 @@ is real and the geometric information is provably intact after one hop.
   under. Innovation 3's Cartesian/Bessel route gives invariant `|r|` and equivariant
   direction, under which congruent environments *do* produce the same state and the
   collapse becomes genuinely lossless.
+- **Or randomise the orbit representative during training** (§7), which targets the same
+  property statistically rather than structurally: draw `r` per site and rebuild
+  `ops_i <- ops_i . ops_r^-1`, `P -> R P R^-1`. Cheapest of the three, no architecture
+  change. Note this is *not* the Wyckoff-setting augmentation used by
+  WyckoffTransformer, which is a no-op on most of the affected structures -- see §7.
 - Fix §5.1 and §5.2 independently; they are cheap and affect the low-DoF bins.
+
+## 7. Would Wyckoff-setting augmentation fix it?
+
+WyckoffTransformer augments over **alternative settings**: the Euclidean normalizer
+relabels Wyckoff letters when the origin or axes are chosen differently, and
+`preprocess_wychoffs.get_augmentation_dict` enumerates those relabelings from
+`Group(sg).get_alternatives()`. Since the deficit above is a symmetry-gauge problem, the
+obvious question is whether transplanting that augmentation into DiffCSP training closes
+it. It does not, and the reason is measurable rather than a matter of degree.
+
+CSPNet is *exactly* translation invariant -- every edge feature is
+`(x_j - x_i) mod 1` and no absolute coordinate is ever consumed -- so a pure origin shift
+is an identity on its inputs, not an approximate symmetry. Augmenting over one produces
+bit-identical gradients. And in the regime that carries the deficit, that is nearly all
+the setting gauge is:
+
+| subset | n | alt settings | pure origin shifts | acting on CSPNet | structures with no acting alternative |
+|---|---:|---:|---:|---:|---:|
+| all | 1000 | 6.4 | 4.3 | 2.1 | 63% |
+| DoF <= 5 | 583 | 4.4 | 3.1 | 1.3 | 68% |
+| DoF >= 9, mult == 1 | 67 | 6.1 | 1.9 | 4.2 | 0% |
+| **DoF >= 9, mult > 1** | 197 | 10.2 | 6.7 | 3.5 | **69%** |
+
+The groups carrying the deficit are the worst case: P-1 (n=53), P2_1/c (n=50), P2_1/m
+(n=19) and Pnma (n=8) have **zero** acting alternatives -- all eight of each are origin
+shifts. Where alternatives do act they are inversions (`-x,-y,-z` and its shifted
+variants) in the non-centrosymmetric groups. So for DiffCSP the augmentation is a no-op
+on two thirds of the relevant structures and teaches enantiomorph invariance on the rest.
+
+It is also worth being clear that the letter ambiguity is **not** conditioning noise at
+the WyFormer -> DiffCSP++ interface. CSPNet embeds only `Z` and `t`; a Wyckoff letter
+reaches it as geometry, never as a token. If the generator emits `b` where training saw
+`a`, pyXtal instantiates the same crystal at a shifted origin and the model's inputs are
+unchanged. The case for this augmentation is a case about WyFormer's own inputs, which
+*are* the letters, and it stands or falls independently of anything measured here.
+
+### The gauge that does matter
+
+Any member of a Wyckoff orbit can serve as the anchor, chosen independently per site --
+`prod_k m_k` descriptions against roughly ten global settings, and precisely what
+Innovation 1 quotients out. An equivariant denoiser would be blind to the choice. The
+converged model is not:
+
+| orbit size m | n sites | rel. spread of score | two-viewpoint rel. diff |
+|---:|---:|---:|---:|
+| 1 | 982 | 0.001 | 0.001 |
+| 2 | 734 | 0.302 | 0.326 |
+| 3-4 | 642 | 0.422 | 0.490 |
+| 5-8 | 138 | (unstable) | 0.625 |
+
+Swapping which of two equally valid atoms is called the anchor moves the predicted score
+by 33% at multiplicity 2 and 63% at 5-8. The multiplicity-1 row reads 0.001, which is
+the null -- there is no choice to make -- and it lines up with §1, where the two
+architectures tie on exactly those structures. (The spread column divides by a mean that
+can cancel toward zero at high multiplicity; the pairwise column is the robust one.)
+
+That number is the headroom, and it is what a representative-randomising augmentation
+would train away: draw `r` per site and rebuild `ops_i <- ops_i . ops_r^-1`,
+`P -> R P R^-1`. If it reached exact invariance, vanilla's `m` views would collapse to
+`m` copies of one and its advantage would vanish by construction. Expect less than that
+in practice -- augmentation buys approximate invariance where the full cell gets the
+views exactly and for free -- which is the argument for the structural routes in §6
+instead of, or alongside, the statistical one.
 
 ## Reproducing
 
@@ -259,6 +329,10 @@ uv run python bench/multiplicity_analysis.py \
 
 # layer-by-layer divergence, one checkpoint in both decoders
 uv run python bench/layer_divergence.py
+
+# which symmetry gauge the collapse discards, and how far the model is from
+# being blind to it (§7)
+uv run python bench/viewpoint_gauge.py --ckpt runs/mp20_wyckoff/wyckoff_inno2_best.pt
 
 # clash and cell-volume diagnostics (§4)
 uv run python bench/structure_diagnostics.py \
