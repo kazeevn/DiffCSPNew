@@ -17,3 +17,18 @@ WyckoffTransformer_mp_20.json
 dist/
 build/
 *.egg-info/
+
+# benchmark intermediates: large pickles, regenerable from bench/run_*.sh
+bench/*.pkl
+
+# run logs
+*.log
+
+# trained checkpoints -- reproducible outputs, archived as W&B artifacts.
+# test_ckpt.pt is tracked deliberately: it is the reference DiffCSP++ release.
+cspnet_lemat_*.pt
+orb_v3_diffcsp_*.pt
+*_best.pt
+
+# W&B artifact downloads
+artifacts/

@@ -4,6 +4,10 @@
 
 DiffCSP++ generates periodic crystal structures by diffusing atomic fractional coordinates on the 3-torus and lattice vectors on the Lie algebra $\mathfrak{gl}(3, \mathbb{R})$, enforcing exact space group symmetries by design. It supports both the original deep GNN denoiser (CSPNet) and a frozen pretrained Machine Learning Interatomic Potential backbone (ORB MLIP) with a lightweight adapter network.
 
+**Results and notes:** [`docs/benchmark.md`](docs/benchmark.md) for structure-prediction
+benchmarks, [`docs/training-stability.md`](docs/training-stability.md) for known
+training-stability issues and proposed fixes.
+
 ---
 
 ## 1. Architecture & Package Structure
@@ -23,7 +27,7 @@ diffcsp/
 │   └── transforms.py      # Coordinate (frac/cart), force, and lattice matrix transforms
 ├── models/             # Neural network architectures
 │   ├── cspnet.py          # Original 6-layer GNN denoiser
-│   ├── cspnet_orb.py      # Lightweight adapter on frozen ORB MLIP with by-design zero-force constraint
+│   ├── cspnet_orb.py      # Lightweight adapter on frozen ORB MLIP (forces, stress & representations as conditioning)
 │   ├── diffusion.py       # Base CSPDiffusion with predictor-corrector sampler
 │   ├── diffusion_orb.py   # CSPDiffusionORB subclassing base diffusion with adapter head
 │   ├── layers.py          # CSPLayer message passing and SinusoidsEmbedding
@@ -31,7 +35,9 @@ diffcsp/
 └── cli/                # Structured command-line interfaces
     ├── train.py           # Unified training CLI (both CSPNet and ORB adapter)
     └── inference.py       # Unified structure generation CLI
-tests/                  # Comprehensive pytest test suite (22 unit & integration tests)
+bench/                  # Structure-prediction benchmark harness (see docs/benchmark.md)
+docs/                   # Benchmark results and training notes
+tests/                  # pytest suite (27 unit & integration tests)
 ```
 
 ---
@@ -134,7 +140,7 @@ print(f"Loaded {len(structures)} generated pymatgen structures.")
 ```bash
 ./run_container.sh python train.py \
   --model orb \
-  --orb_model orb-v2 \
+  --orb_model orb-v3 \
   --train_csv train.csv \
   --test_csv test.csv \
   --batch_size 64 \
@@ -159,6 +165,48 @@ For fast local verification or testing without GPU weights, pass `--mock_orb`:
   --lr 1e-3 \
   --device cuda
 ```
+
+### Dataset options
+
+Large CSV tables are preprocessed once into shards under `--cache_dir` and reused; an
+interrupted preprocessing run resumes from the shards already written rather than
+restarting. A complete shard set loads without re-reading the source CSV.
+
+```bash
+python train.py --model cspnet \
+  --train_csv data/train.csv.gz --test_csv data/val.csv.gz \
+  --max_e_hull 0.1 \        # keep structures within 0.1 eV of the hull
+  --max_atoms 128 \         # drop larger conventional cells (see below)
+  --cache_dir cache/my_dataset
+```
+
+`--max_atoms` matters for any dataset with large cells. CSPNet connects every atom in
+a cell to every other, so cost and memory grow as the square of the cell size: a
+992-atom conventional cell is ~984k edges on its own, more than a whole batch of
+typical ones, and fits at no batch size. The cap is applied to the loaded cache, so
+one cache serves any cap.
+
+`--hidden_dim` and `--num_layers` default per model — 128/2 for `--model orb` (a small
+head on a frozen 25.6M potential), 512/6 for `--model cspnet` (the whole denoiser).
+The effective values are printed at startup and logged to W&B.
+
+### ORB backbone options
+
+`--orb_model` accepts an alias (`orb-v3`, `orb-v3-direct-omat`, `orb-v2`, ...) or any
+`orb_models.pretrained` loader name. Unknown names raise rather than silently
+substituting a different backbone.
+
+The adapter conditions on the potential's forces, stress **and** its learned atomic
+representations. Three flags change that:
+
+| flag | effect |
+|---|---|
+| `--no_orb_node_features` | condition on forces and stress only, without the representations |
+| `--enforce_zero_force` | constrain the coordinate score to `gamma*f_frac + v_perp`, `gamma > 0` |
+| `--force_residual` | add a time-gated force residual instead of the hard constraint |
+
+Both constraint forms are off by default: they can express only one direction along
+the force, and training drives `gamma` to its floor. See `docs/benchmark.md`.
 
 ---
 
