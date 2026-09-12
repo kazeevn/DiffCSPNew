@@ -4,6 +4,7 @@
 .venv/
 .venv*/
 .worktrees/
+.claude/
 __pycache__/
 *.py[cod]
 .pytest_cache/
