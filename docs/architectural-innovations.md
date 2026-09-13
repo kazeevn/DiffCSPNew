@@ -216,3 +216,17 @@ The following matrix organizes the innovations by implementation effort and expe
 | **3** | **Asymmetric Unit Message Passing & Tangent Subspaces**<br>Denoise $K$ Wyckoff sites instead of $N$ atoms; project vector fields onto site stabilizer subspaces | [`diffcsp/models/layers.py`](file:///home/kna/DiffCSPNew/diffcsp/models/layers.py), [`diffcsp/models/diffusion.py`](file:///home/kna/DiffCSPNew/diffcsp/models/diffusion.py) | Medium (1 week) | Eliminates $O(N^2)$ edge explosion, fixes training instability, 10x faster forward pass. |
 | **4** | **Riemannian Flow Matching**<br>Formulate continuous vector fields on $\mathbb{T}^{\text{DoF}} \times \mathfrak{g}_G$ with ODE integration | [`diffcsp/core/schedulers.py`](file:///home/kna/DiffCSPNew/diffcsp/core/schedulers.py), [`diffcsp/models/diffusion.py`](file:///home/kna/DiffCSPNew/diffcsp/models/diffusion.py) | Medium-High (1–2 weeks) | 20x–50x speedup in sampling (30 steps vs. 1,000 steps); smoother training curves. |
 | **5** | **WyFormer Cross-Attention & Rich Wyckoff Tokens**<br>Embed Wyckoff letter, multiplicity, and cross-attend into WyFormer latent states | [`diffcsp/models/cspnet.py`](file:///home/kna/DiffCSPNew/diffcsp/models/cspnet.py), [`diffcsp/data/dataset.py`](file:///home/kna/DiffCSPNew/diffcsp/data/dataset.py) | Medium (3–5 days) | Tighter conditioning between discrete Wyckoff scaffold and continuous coordinates. |
+
+---
+
+## 5. Experimental Validation: DiffCSP-Geo
+
+The combination of Cartesian metric embeddings (Bessel RBFs + unit direction vectors), Lie-algebra stabilizer tangent space projections, and rich crystallographic conditioning was formally realized and validated in **DiffCSP-Geo** ([`diffcsp/models/geo_cspnet.py`](file:///home/kna/DiffCSPNew/diffcsp/models/geo_cspnet.py), [`diffcsp/models/geo_diffusion.py`](file:///home/kna/DiffCSPNew/diffcsp/models/geo_diffusion.py)).
+
+As documented in [`diffcsp-geo-study.md`](diffcsp-geo-study.md), DiffCSP-Geo preserves the full-cell $N$-atom torus topology (avoiding the viewpoint gauge collapse of asymmetric-unit models and the radial cutoff starvation of PaiNN) while matching vanilla DiffCSP++'s exact 12.28M parameter budget and gradient steps.
+
+**Key Empirical Results on MP-20 (500 epochs):**
+- **DoF $\ge$ 6 Match Rate:** **73.62%** vs **69.78%** (+3.84%, +16 crystals solved, $p = 0.0440$, Per-Trial: **63.07%** vs **59.07%**, $p = 2.39 \times 10^{-4}$)
+- **DoF < 6 Match Rate:** **98.97%** vs **98.63%** (+0.34%, Per-Trial: **98.06%** vs **97.26%**, $p = 0.0125$)
+- **Overall Match Rate:** **88.40%** vs **86.60%** (+1.80%, +18 crystals solved, $p = 0.0273$)
+- **Physical Validity:** Clash rate reduced by **59.5%** (zero clashes in DoF 6–8) and median cell volume error reduced by **43.0%**.

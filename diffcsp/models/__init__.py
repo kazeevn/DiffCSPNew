@@ -11,6 +11,8 @@ from diffcsp.models.layers import (
     generate_asymmetric_edges,
     generate_intra_crystal_edges,
 )
+from diffcsp.models.geo_cspnet import GeoCSPLayer, GeoCSPNet
+from diffcsp.models.geo_diffusion import GeoDiffusion
 from diffcsp.models.orb_wrapper import MockOrbBackbone, OrbBackboneWrapper, build_orb_backbone
 from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet
 from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
@@ -21,6 +23,9 @@ __all__ = [
     "CSPDiffusion",
     "CSPDiffusionORB",
     "CSPLayer",
+    "GeoCSPLayer",
+    "GeoCSPNet",
+    "GeoDiffusion",
     "WyckoffCSPLayer",
     "WyckoffCSPNet",
     "WyckoffDiffusion",

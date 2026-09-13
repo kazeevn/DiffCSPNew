@@ -22,6 +22,8 @@ from diffcsp.data.dataset import CrystDataset
 from diffcsp.models.cspnet import CSPNet
 from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
+from diffcsp.models.geo_cspnet import GeoCSPNet
+from diffcsp.models.geo_diffusion import GeoDiffusion
 from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet
 from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
 from diffcsp.models.wyckoff_painn import WyckoffPaiNN
@@ -190,6 +192,7 @@ def train(
         "asymm": (512, 6),
         "painn": (512, 6),
         "wyckoff_painn": (512, 6),
+        "geo": (512, 6),
     }
     arch_h, arch_l = ARCH_DEFAULTS[model_type]
     if hidden_dim is not None:
@@ -229,6 +232,14 @@ def train(
         params_to_train = list(model.parameters())
         if is_main:
             print(f"WyckoffCSPNet: hidden_dim={arch_h} num_layers={arch_l}")
+            print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
+    elif model_type == "geo":
+        model = GeoDiffusion(
+            device=dev, decoder=GeoCSPNet(hidden_dim=arch_h, num_layers=arch_l)
+        ).to(dev)
+        params_to_train = list(model.parameters())
+        if is_main:
+            print(f"GeoCSPNet: hidden_dim={arch_h} num_layers={arch_l}")
             print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
     else:
         model = CSPDiffusion(
@@ -448,6 +459,14 @@ def train(
         batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False) if is_main else train_loader
         for batch in batch_iter:
             batch = batch.to(dev, non_blocking=True)
+            if model_type == "geo":
+                if not hasattr(batch, "multiplicities"):
+                    mult_per_anchor = torch.bincount(batch.anchor_index)
+                    batch.multiplicities = mult_per_anchor[batch.anchor_index].clamp(0, 192)
+                if not hasattr(batch, "dofs"):
+                    batch.dofs = torch.round(
+                        torch.diagonal(batch.ops[batch.anchor_index, :3, :3], dim1=-2, dim2=-1).sum(-1)
+                    ).long().clamp(0, 3)
             out = ddp_model(batch)
             loss = out.get("loss")
             if loss is None or torch.isnan(loss):
@@ -479,6 +498,14 @@ def train(
                 val_losses = []
                 for batch in tqdm(test_loader, desc="Validating", leave=False):
                     batch = batch.to(dev, non_blocking=True)
+                    if model_type == "geo":
+                        if not hasattr(batch, "multiplicities"):
+                            mult_per_anchor = torch.bincount(batch.anchor_index)
+                            batch.multiplicities = mult_per_anchor[batch.anchor_index].clamp(0, 192)
+                        if not hasattr(batch, "dofs"):
+                            batch.dofs = torch.round(
+                                torch.diagonal(batch.ops[batch.anchor_index, :3, :3], dim1=-2, dim2=-1).sum(-1)
+                            ).long().clamp(0, 3)
                     loss = model.training_step(batch, 0)
                     if loss is not None:
                         val_losses.append(loss.item())
@@ -585,7 +612,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["orb", "cspnet", "wyckoff", "asymm", "painn", "wyckoff_painn"],
+        choices=["orb", "cspnet", "wyckoff", "asymm", "painn", "wyckoff_painn", "geo"],
         default="orb",
         help="Model backbone",
     )
@@ -622,11 +649,11 @@ def main() -> None:
     parser.add_argument("--eval_freq", type=int, default=10, help="Evaluation frequency in epochs")
     parser.add_argument(
         "--hidden_dim", type=int, default=None,
-        help="Denoiser hidden dimension (default: 128 for --model orb, 512 for --model cspnet)",
+        help="Denoiser hidden dimension (default: 128 for --model orb, 512 for --model cspnet/geo)",
     )
     parser.add_argument(
         "--num_layers", type=int, default=None,
-        help="Number of denoiser layers (default: 2 for --model orb, 6 for --model cspnet)",
+        help="Number of denoiser layers (default: 2 for --model orb, 6 for --model cspnet/geo)",
     )
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--ckpt_path", type=str, default="diffcsp_ckpt.pt", help="Checkpoint save path")

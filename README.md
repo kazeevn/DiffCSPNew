@@ -31,6 +31,8 @@ diffcsp/
 │   ├── cspnet_orb.py      # Lightweight adapter on frozen ORB MLIP (forces, stress & representations as conditioning)
 │   ├── diffusion.py       # Base CSPDiffusion with predictor-corrector sampler
 │   ├── diffusion_orb.py   # CSPDiffusionORB subclassing base diffusion with adapter head
+│   ├── geo_cspnet.py      # Geometry-aware GNN with Bessel RBFs, unit bond directions, and Lie stabilizer projections
+│   ├── geo_diffusion.py   # DiffCSP-Geo diffusion model matching 12.28M parameter budget
 │   ├── layers.py          # CSPLayer message passing and SinusoidsEmbedding
 │   └── orb_wrapper.py     # Frozen ORB MLIP potential wrapper with MockOrbBackbone fallback
 └── cli/                # Structured command-line interfaces
@@ -109,6 +111,14 @@ uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
   --device cuda
 ```
 
+### With DiffCSP-Geo (GeoCSPNet):
+```bash
+uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
+  --model geo \
+  --ckpt_path runs/mp20_geo/geo_mp20_500e_best.pt \
+  --device cuda
+```
+
 ### With Standard DiffCSP++ (CSPNet):
 ```bash
 uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
@@ -117,7 +127,7 @@ uv run diffcsp-inference data/mp-20/WyckoffTransformer_mp_20.json.gz \
   --device cuda
 ```
 
-The output structures are saved in gzip-compressed JSON (`*.diffcsp-orb.json.gz` or `*.diffcsp-cspnet.json.gz`).
+The output structures are saved in gzip-compressed JSON (`*.diffcsp-geo.json.gz`, `*.diffcsp-orb.json.gz`, or `*.diffcsp-cspnet.json.gz`).
 
 ### Reading Output Structures:
 ```python
@@ -152,6 +162,18 @@ uv run diffcsp-train \
 For fast local verification or testing without GPU weights, pass `--mock_orb`:
 ```bash
 uv run diffcsp-train --model orb --mock_orb --epochs 5 --batch_size 16 --device cpu
+```
+
+### Train DiffCSP-Geo (GeoCSPNet):
+```bash
+uv run diffcsp-train \
+  --model geo \
+  --train_csv data/mp-20/train.csv \
+  --test_csv data/mp-20/test.csv \
+  --batch_size 128 \
+  --epochs 500 \
+  --lr 5e-4 \
+  --device cuda
 ```
 
 ### Train Standard DiffCSP++ (CSPNet):

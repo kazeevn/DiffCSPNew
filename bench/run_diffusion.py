@@ -88,7 +88,7 @@ def to_structures(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--regime", choices=["orb", "cspnet", "wyckoff", "asymm", "painn"], required=True)
+    ap.add_argument("--regime", choices=["orb", "cspnet", "wyckoff", "asymm", "painn", "geo"], required=True)
     ap.add_argument("--inits", default="runs/bench/mp20/inits.pkl")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--batch_size", type=int, default=128)
@@ -105,7 +105,7 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
-    dev = torch.device("cuda")
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
 
@@ -136,6 +136,22 @@ def main():
         model = WyckoffDiffusion(
             device=dev,
             decoder=WyckoffPaiNN(hidden_dim=h, num_layers=l),
+        ).to(dev)
+        raw = torch.load(a.ckpt, map_location=dev, weights_only=False)
+        if isinstance(raw, dict) and "model_state_dict" in raw:
+            print(f"checkpoint epoch={raw.get('epoch')} train_loss={raw.get('train_loss')} val_loss={raw.get('val_loss')}")
+            model.load_state_dict(raw["model_state_dict"])
+        elif isinstance(raw, dict):
+            model.load_state_dict(raw)
+    elif a.regime == "geo":
+        from diffcsp.models.geo_diffusion import GeoDiffusion
+        from diffcsp.models.geo_cspnet import GeoCSPNet
+
+        h = a.hidden_dim if a.hidden_dim is not None else 512
+        l = a.num_layers if a.num_layers is not None else 6
+        model = GeoDiffusion(
+            device=dev,
+            decoder=GeoCSPNet(hidden_dim=h, num_layers=l),
         ).to(dev)
         raw = torch.load(a.ckpt, map_location=dev, weights_only=False)
         if isinstance(raw, dict) and "model_state_dict" in raw:

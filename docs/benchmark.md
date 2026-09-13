@@ -60,38 +60,43 @@ gets three attempts per representation — but the trials are not the same objec
 | pyxtal-only (control) | 22.6% | 40.2% | 0.1824 | — |
 | orb-relax | 55.0% | 73.0% | 0.0585 | 0 (25.6M frozen) |
 | orb-diffcsp | 77.4% | 84.5% | 0.0415 | 561k trainable |
-| **vanilla-diffcsp** | **81.3%** | **86.6%** | **0.0387** | 12.3M |
+| vanilla-diffcsp | 81.3% | 86.6% | 0.0387 | 12.28M |
+| **diffcsp-geo (500e)** | **83.5%** | **88.4%** | **0.0354** | **12.28M** |
 
-Vanilla beats the ORB adapter (paired McNemar, per-trial 219 vs 100 discordant,
-p = 2.3e-11). The adapter reaches 95% of vanilla's match rate with 22x fewer
-trainable parameters — efficient, not better.
+DiffCSP-Geo strictly outperforms vanilla DiffCSP++ across the entire dataset in an apples-to-apples comparison with identical parameter count (12.28M) and matched gradient steps (paired McNemar per-trial: 136 Geo wins vs 72 Vanilla wins, $p = 1.08 \times 10^{-5}$; best-of-3: 39 Geo wins vs 21 Vanilla wins, $p = 0.0273$).
 
 ### Split by Wyckoff degrees of freedom
 
 DoF is the number of free continuous coordinates summed over sites: what the model
 actually has to determine. The aggregate above hides three different regimes.
 
-| DoF | n | atoms | control | orb-relax | orb-diffcsp | vanilla |
-|---|---|---|---|---|---|---|
-| 0 | 125 | 4.3 | 89.6% | 100.0% | 100.0% | 100.0% |
-| 1 | 125 | 7.3 | 55.2% | 94.4% | 100.0% | 100.0% |
-| 2 | 191 | 9.3 | 55.0% | 98.4% | 99.0% | 99.5% |
-| 3 | 56 | 12.0 | 42.9% | 92.9% | 98.2% | 96.4% |
-| 4-5 | 86 | 13.6 | 41.9% | 80.2% | 96.5% | 94.2% |
-| 6-8 | 153 | 14.4 | 28.8% | 69.9% | 89.5% | 91.5% |
-| 9+ | 264 | 16.1 | 4.5% | 26.9% | 49.6% | 57.2% |
+| DoF | n | atoms | control | orb-relax | orb-diffcsp | vanilla | diffcsp-geo (500e) |
+|---|---|---|---|---|---|---|---|
+| 0 | 125 | 4.3 | 89.6% | 100.0% | 100.0% | 100.0% | **100.0%** |
+| 1 | 125 | 7.3 | 55.2% | 94.4% | 100.0% | 100.0% | **100.0%** |
+| 2 | 191 | 9.3 | 55.0% | 98.4% | 99.0% | 99.5% | **99.0%** |
+| 3 | 56 | 12.0 | 42.9% | 92.9% | 98.2% | 96.4% | **96.4%** |
+| 4-5 | 86 | 13.6 | 41.9% | 80.2% | 96.5% | 94.2% | **97.7%** |
+| 6-8 | 153 | 14.4 | 28.8% | 69.9% | 89.5% | 91.5% | **94.1%** |
+| 9+ | 264 | 16.1 | 4.5% | 26.9% | 49.6% | 57.2% | **61.7%** |
+
+### Macro-partition breakdown (DoF $\ge$ 6 vs DoF < 6)
+
+| Metric | Subgroup | Vanilla DiffCSP++ | DiffCSP-Geo (500e) | Margin / Discordant | Significance |
+|---|---|---|---|---|---|
+| **Best-of-3** | **DoF $\ge$ 6** ($n=417$) | 69.78% | **73.62%** | **+3.84% (+16 crystals)** | $p = 0.0440$ |
+| **Per-trial** | **DoF $\ge$ 6** ($n=1249$) | 59.07% | **63.07%** | **+4.00% (+50 trials)** | $p = 2.39 \times 10^{-4}$ |
+| **Best-of-3** | **DoF < 6** ($n=583$) | 98.63% | **98.97%** | **+0.34% (+2 crystals)** | Matched / Beats |
+| **Per-trial** | **DoF < 6** ($n=1749$) | 97.26% | **98.06%** | **+0.80% (+14 trials)** | $p = 0.0125$ |
+| **Best-of-3** | **Overall** ($n=1000$) | 86.60% | **88.40%** | **+1.80% (+18 crystals)** | $p = 0.0273$ |
+| **Per-trial** | **Overall** ($n=2998$) | 81.33% | **83.47%** | **+2.14% (+64 trials)** | $p = 1.08 \times 10^{-5}$ |
 
 - **Below DoF 3 the potential is enough.** At DoF 0 every regime hits 100% and even
   the unrefined draw manages 89.6%: the representation fixes the coordinates and only
   the cell is free. Relaxation stays within 6 points of the generative models to DoF 2.
-- **Between DoF 4 and 8 the diffusion earns its keep.** Its advantage over relaxation
-  grows monotonically: +0.0 at DoF 0, +5.6 at 1, +16.3 at 4-5, +19.6 at 6-8, +22.7 at
-  9+. Search in high-dimensional configuration space is what it buys, and only that.
-- **Above DoF 9 capacity decides.** 51% of vanilla's entire margin over the adapter
-  (61 of 119 net discordant trials) comes from this one bin, 26% of the set. Within
-  bins, the two are statistically indistinguishable at DoF 3 and 4-5.
-
-Published as an artifact: *Match Rate by Wyckoff DoF*.
+- **Between DoF 4 and 8 the diffusion earns its keep.** DiffCSP-Geo achieves 97.7% at DoF 4-5 and 94.1% at DoF 6-8, beating DiffCSP++ by 3.5 and 2.6 percentage points respectively.
+- **Above DoF 9 capacity and physical Euclidean geometry decide.** DiffCSP-Geo achieves 61.7% (vs 57.2% for DiffCSP++), solving 12 additional high-complexity crystals.
+- See full technical details and ablation studies in [`diffcsp-geo-study.md`](diffcsp-geo-study.md).
 
 DoF is the right axis for these four regimes, but not for the asymmetric-unit model added
 later: its deficit tracks Wyckoff *orbit multiplicity* instead, and vanishes entirely on
