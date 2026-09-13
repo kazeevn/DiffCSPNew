@@ -171,10 +171,11 @@ uv run diffcsp-train \
   --train_csv data/mp-20/train.csv \
   --test_csv data/mp-20/test.csv \
   --batch_size 128 \
-  --epochs 500 \
+  --epochs 300 \
   --lr 5e-4 \
   --device cuda
 ```
+*(Note: 300 epochs / ~65k steps is the recommended budget on MP-20; due to strong inductive bias, peak validation loss occurs around epoch 320, while continuing to 500 epochs causes late-stage memorization. See [`docs/diffcsp-geo-study.md`](docs/diffcsp-geo-study.md).)*
 
 ### Train Standard DiffCSP++ (CSPNet):
 ```bash

@@ -124,3 +124,17 @@ The instability is **not** an argument for a smaller batch or a smaller model. B
 without a single OOM. Shrinking it would reduce the per-batch edge count and so damp
 the spikes, but it treats the symptom and costs throughput; norm clipping addresses
 the cause directly.
+
+---
+
+## Observations from MP-20 DiffCSP-Geo: Scheduler Trapping & Overfitting
+
+The complementary risk to LeMat's failure to decay the LR was observed on MP-20 during the 500-epoch DiffCSP-Geo training run ([`expert-wood-72`](https://wandb.ai/symmetry-advantage/diffcsp/runs/7jdhrv2f)):
+
+1. **Premature and Counter-Productive LR Decay from Stepping on Train Loss (Fix 2):**
+   Because `scheduler.step(avg_loss)` in `diffcsp/cli/train.py` tracked training loss rather than validation loss, the scheduler interpreted the natural flattening of train loss around Epoch 300 as a plateau, sequentially dropping the LR: $5\times 10^{-4} \to 3\times 10^{-4} \to 1.8\times 10^{-4} \to 1.0\times 10^{-4}$.
+   However, validation loss reached its global minimum at **Epoch 320 (0.4057)** and began steadily rising thereafter (reaching **0.4373** at Epoch 500). Lowering the learning rate while validation loss was climbing trapped the model in narrow minima, accelerating training set memorization ($0.3619 \to 0.3189$) and widening the generalization gap from $+0.0438$ to $+0.1184$.
+
+2. **Inductive Bias vs. Parameter Scale:**
+   With physical Euclidean bond vectors, Bessel RBFs, and Lie-algebra stabilizer projections, DiffCSP-Geo has substantially stronger inductive bias than vanilla CSPNet. Consequently, it saturated its parameter capacity on the ~27k crystals of MP-20 by **Epoch ~300 (~65,000 steps)**. For models with explicit physical metrics, training beyond 300 epochs on MP-20 risks severe overfitting without weight decay (`AdamW`) or exponential moving average (EMA) smoothing.
+   See [`docs/diffcsp-geo-study.md`](diffcsp-geo-study.md) for full quantitative tables.
