@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import signal
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,10 @@ from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
 from diffcsp.models.geo_cspnet import GeoCSPNet
 from diffcsp.models.geo_diffusion import GeoDiffusion
+from diffcsp.models.geo_v2_cspnet import GeoV2CSPNet
+from diffcsp.models.geo_v2_diffusion import GeoV2Diffusion
+from diffcsp.models.geo_orb_cspnet import GeoOrbCSPNet
+from diffcsp.models.geo_orb_diffusion import GeoOrbDiffusion
 from diffcsp.models.wyckoff_cspnet import WyckoffCSPNet
 from diffcsp.models.wyckoff_diffusion import WyckoffDiffusion
 from diffcsp.models.wyckoff_painn import WyckoffPaiNN
@@ -193,6 +198,8 @@ def train(
         "painn": (512, 6),
         "wyckoff_painn": (512, 6),
         "geo": (512, 6),
+        "geov2": (512, 6),
+        "geo_orb": (512, 6),
     }
     arch_h, arch_l = ARCH_DEFAULTS[model_type]
     if hidden_dim is not None:
@@ -241,6 +248,26 @@ def train(
         if is_main:
             print(f"GeoCSPNet: hidden_dim={arch_h} num_layers={arch_l}")
             print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
+    elif model_type == "geov2":
+        model = GeoV2Diffusion(
+            device=dev, decoder=GeoV2CSPNet(hidden_dim=arch_h, num_layers=arch_l)
+        ).to(dev)
+        model.init_ema(decay=0.9999)
+        params_to_train = list(model.parameters())
+        if is_main:
+            print(f"GeoV2CSPNet: hidden_dim={arch_h} num_layers={arch_l}")
+            print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
+    elif model_type == "geo_orb":
+        model = GeoOrbDiffusion(
+            device=dev,
+            decoder=GeoOrbCSPNet(hidden_dim=arch_h, num_layers=arch_l, device=dev),
+        ).to(dev)
+        model.init_ema(decay=0.9999)
+        params_to_train = model.get_trainable_parameters()
+        if is_main:
+            counts = model.count_parameters()
+            print(f"GeoOrbDiffusion: hidden_dim={arch_h} num_layers={arch_l}")
+            print(f"Trainable params: {counts['trainable']:,} | Frozen ORB: {counts['frozen']:,}")
     else:
         model = CSPDiffusion(
             device=dev, decoder=CSPNet(hidden_dim=arch_h, num_layers=arch_l)
@@ -255,8 +282,21 @@ def train(
     else:
         ddp_model = model
 
-    optimizer = torch.optim.Adam(params_to_train, lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.6, patience=15, min_lr=1e-4)
+    if model_type in ("geov2", "geo_orb"):
+        optimizer = torch.optim.AdamW(params_to_train, lr=lr, weight_decay=1e-4)
+        warmup_epochs = min(10, max(1, epochs // 10))
+        scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+        )
+        scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, epochs - warmup_epochs), eta_min=1e-6
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[warmup_epochs]
+        )
+    else:
+        optimizer = torch.optim.Adam(params_to_train, lr=lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.6, patience=15, min_lr=1e-4)
 
     start_epoch = 0
     resume_path = None
@@ -282,6 +322,8 @@ def train(
                 optimizer.load_state_dict(ckpt_data["optimizer_state_dict"])
             if "scheduler_state_dict" in ckpt_data:
                 scheduler.load_state_dict(ckpt_data["scheduler_state_dict"])
+            if "ema_state_dict" in ckpt_data and hasattr(model, "load_ema_state_dict"):
+                model.load_ema_state_dict(ckpt_data["ema_state_dict"], device=dev)
             start_epoch = ckpt_data.get("epoch", 0)
             resume_wandb_id = ckpt_data.get("wandb_run_id")
             if is_main:
@@ -312,6 +354,10 @@ def train(
             "val_loss": val_loss_val,
             "wandb_run_id": getattr(wandb_run, "id", None) if wandb_run is not None else None,
         }
+        if hasattr(model, "ema_state_dict"):
+            ema_sd = model.ema_state_dict()
+            if ema_sd is not None:
+                ckpt["ema_state_dict"] = ema_sd
         p = Path(ckpt_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp_p = p.with_suffix(".tmp")
@@ -459,7 +505,7 @@ def train(
         batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False) if is_main else train_loader
         for batch in batch_iter:
             batch = batch.to(dev, non_blocking=True)
-            if model_type == "geo":
+            if model_type in ("geo", "geov2", "geo_orb"):
                 if not hasattr(batch, "multiplicities"):
                     mult_per_anchor = torch.bincount(batch.anchor_index)
                     batch.multiplicities = mult_per_anchor[batch.anchor_index].clamp(0, 192)
@@ -476,6 +522,11 @@ def train(
             loss.backward()
             torch.nn.utils.clip_grad_value_(params_to_train, 0.4)
             optimizer.step()
+            if model_type in ("geov2", "geo_orb"):
+                if is_ddp:
+                    ddp_model.module.update_ema()
+                else:
+                    model.update_ema()
             optimizer.zero_grad(set_to_none=True)
 
         local_avg_loss = float(np.mean(train_losses)) if train_losses else float("nan")
@@ -486,7 +537,10 @@ def train(
         else:
             avg_loss = local_avg_loss
 
-        scheduler.step(avg_loss)
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(avg_loss)
+        else:
+            scheduler.step()
         log_data = {"epoch": epoch, "train_loss": avg_loss, "lr": optimizer.param_groups[0]["lr"]}
         if is_main:
             print(f"Epoch {epoch:03d} | Train Loss: {avg_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
@@ -494,11 +548,12 @@ def train(
         # Periodic Evaluation
         if is_main and test_loader is not None and ((epoch + 1) % eval_freq == 0 or (epoch + 1) == epochs):
             model.eval()
-            with torch.no_grad():
+            ema_ctx = model.ema_scope() if (hasattr(model, "ema_scope") and model.ema is not None) else nullcontext()
+            with ema_ctx, torch.no_grad():
                 val_losses = []
                 for batch in tqdm(test_loader, desc="Validating", leave=False):
                     batch = batch.to(dev, non_blocking=True)
-                    if model_type == "geo":
+                    if model_type in ("geo", "geov2", "geo_orb"):
                         if not hasattr(batch, "multiplicities"):
                             mult_per_anchor = torch.bincount(batch.anchor_index)
                             batch.multiplicities = mult_per_anchor[batch.anchor_index].clamp(0, 192)
@@ -612,7 +667,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["orb", "cspnet", "wyckoff", "asymm", "painn", "wyckoff_painn", "geo"],
+        choices=["orb", "cspnet", "wyckoff", "asymm", "painn", "wyckoff_painn", "geo", "geov2", "geo_orb"],
         default="orb",
         help="Model backbone",
     )

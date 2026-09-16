@@ -17,6 +17,10 @@ from tqdm import tqdm
 from diffcsp.data.dataset import WyckoffDataset
 from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
+from diffcsp.models.geo_cspnet import GeoCSPNet
+from diffcsp.models.geo_diffusion import GeoDiffusion
+from diffcsp.models.geo_v2_cspnet import GeoV2CSPNet
+from diffcsp.models.geo_v2_diffusion import GeoV2Diffusion
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +139,20 @@ def generate_structures(
             hidden_dim=hidden_dim,
             num_layers=num_layers,
         ).to(dev)
+    elif model_type == "geov2":
+        h = hidden_dim if hidden_dim != 128 else 512
+        l = num_layers if num_layers != 2 else 6
+        model = GeoV2Diffusion(
+            device=dev,
+            decoder=GeoV2CSPNet(hidden_dim=h, num_layers=l),
+        ).to(dev)
+    elif model_type == "geo":
+        h = hidden_dim if hidden_dim != 128 else 512
+        l = num_layers if num_layers != 2 else 6
+        model = GeoDiffusion(
+            device=dev,
+            decoder=GeoCSPNet(hidden_dim=h, num_layers=l),
+        ).to(dev)
     else:
         model = CSPDiffusion(device=dev).to(dev)
 
@@ -142,19 +160,25 @@ def generate_structures(
     ckpt_file = _resolve_checkpoint(ckpt_path, dev)
     if ckpt_file.exists():
         ckpt_data = torch.load(ckpt_file, map_location=dev, weights_only=False)
-        # Handle full training checkpoint dicts (contain model_state_dict key)
-        if isinstance(ckpt_data, dict) and "model_state_dict" in ckpt_data:
+        # Check for EMA weights in GeoV2Diffusion
+        if isinstance(ckpt_data, dict) and "ema_state_dict" in ckpt_data and hasattr(model, "load_ema_state_dict"):
+            model.load_ema_state_dict(ckpt_data["ema_state_dict"], device=dev)
+            model.apply_ema()
+            print(f"Loaded and applied EMA shadow weights from {ckpt_file}")
+        elif isinstance(ckpt_data, dict) and "model_state_dict" in ckpt_data:
             state_dict = ckpt_data["model_state_dict"]
-        else:
-            state_dict = ckpt_data
-        if "decoder.coord_out.weight" in state_dict or "decoder.csp_layers.0.edge_mlp.0.weight" in state_dict:
             model.load_state_dict(state_dict, strict=False)
-        elif hasattr(model, "decoder"):
-            model.decoder.load_state_dict(
-                {k: v for k, v in state_dict.items() if not k.startswith("orb_backbone.")},
-                strict=False,
-            )
-        print(f"Loaded checkpoint from {ckpt_file}")
+            print(f"Loaded checkpoint from {ckpt_file}")
+        elif isinstance(ckpt_data, dict):
+            state_dict = ckpt_data
+            if "decoder.coord_out.weight" in state_dict or "decoder.coord_node_mlp.0.weight" in state_dict or "decoder.csp_layers.0.edge_mlp.0.weight" in state_dict:
+                model.load_state_dict(state_dict, strict=False)
+            elif hasattr(model, "decoder"):
+                model.decoder.load_state_dict(
+                    {k: v for k, v in state_dict.items() if not k.startswith("orb_backbone.")},
+                    strict=False,
+                )
+            print(f"Loaded checkpoint from {ckpt_file}")
     else:
         print(f"Warning: Checkpoint '{ckpt_file}' not found. Generating with initialized weights.")
 
@@ -211,7 +235,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="DiffCSP++ Inference CLI")
     parser.add_argument("wyckoff_file", type=str, help="Path to input Wyckoff representation file")
     parser.add_argument("--ckpt_path", type=str, default="data/mp-20/test_ckpt.pt", help="Path to checkpoint")
-    parser.add_argument("--model", type=str, choices=["orb", "cspnet"], default="orb", help="Model backbone")
+    parser.add_argument("--model", type=str, choices=["orb", "cspnet", "geo", "geov2"], default="orb", help="Model backbone")
     parser.add_argument(
         "--orb_model",
         type=str,
