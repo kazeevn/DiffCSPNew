@@ -32,6 +32,7 @@ TRAIN_ARGS="$TRAIN_ARGS --epochs 150 --batch_size 128 --lr 5e-4 --eval_freq 5 --
 TRAIN_ARGS="$TRAIN_ARGS --num_workers 6 --prefetch_factor 4"
 TRAIN_ARGS="$TRAIN_ARGS --wandb --wandb_project diffcsp --wandb_entity symmetry-advantage"
 
-qsub -N "dcsp_$RUN_NAME" \
+# Extra arguments go to qsub, e.g. `-a 1500` to hold the first link until 15:00.
+qsub -N "dcsp_$RUN_NAME" "$@" \
     -v "REPO=$repo_root,RUN_NAME=$RUN_NAME,TRAIN_ARGS=$TRAIN_ARGS" \
     "$repo_root/scripts/platforms/aspire2a/train_chain.pbs"
