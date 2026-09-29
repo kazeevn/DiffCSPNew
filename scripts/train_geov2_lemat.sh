@@ -4,6 +4,7 @@
 #   bash scripts/train_geov2_lemat.sh <variant> [qsub options]
 #
 #   a_ehull01    unconditional, E_hull <= 0.1 eV/atom only (= lemat_bulk_fmax1_stress_ehull01)
+#   a_ehull01_lr5e4  as a_ehull01 at lr 5e-4: a_ehull01 (W&B t6l9qjp7) diverged at epoch 15
 #   b_ehull      conditioned on energy_above_hull, all structures
 #   c_ehull_cfg  as b, condition dropped 20% of the time -> classifier-free guidance
 #   d_eform      conditioned on formation_energy_per_atom, all structures
@@ -32,6 +33,8 @@ full="--epochs 40 --eval_freq 2 --save_freq 4 --extra_val_max_e_hull 0.1"
 
 case $variant in
     a_ehull01)   args="--max_e_hull 0.1 --epochs 100 --eval_freq 4 --save_freq 8" ;;
+    # The later --lr overrides the common one.
+    a_ehull01_lr5e4) args="--max_e_hull 0.1 --epochs 100 --eval_freq 4 --save_freq 8 --lr 5e-4" ;;
     b_ehull)     args="$full --cond_props energy_above_hull" ;;
     c_ehull_cfg) args="$full --cond_props energy_above_hull --cond_drop_prob 0.2" ;;
     d_eform)     args="$full --cond_props formation_energy_per_atom" ;;

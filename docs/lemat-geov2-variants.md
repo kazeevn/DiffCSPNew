@@ -59,3 +59,13 @@ A100, trained on packed val and validated on packed test. 711 structures/s, peak
 no skipped steps. Projected on 4 GPUs: ~32 min/epoch on full LeMat, ~14 min on the slice,
 so ~21-23 h per run. The pilot ran one rank, so the 4-rank DDP path was first exercised by
 the real runs.
+
+## Restart of variant a (2026-09-30)
+
+`a_ehull01` (W&B `t6l9qjp7`) diverged: train loss fell to 0.399 at epoch 14, then rose to
+0.43, 0.42, 0.56 and 0.89 by epoch 18, with no non-finite steps, at lr ~9.3e-4. Best
+checkpoint: epoch 12, val loss 0.382 (kept in `runs/diffcsp/geov2_lemat_a_ehull01/`). The run
+was stopped at epoch 19 and restarted from scratch as `a_ehull01_lr5e4`: identical except
+peak lr 5e-4 (the Alex-MP-20 GeoV2 value), from branch `lemat-geov2-a-lr5e4`. The slice's
+larger cells mean ~100 structures per GPU batch against ~160 for the full data, i.e. noisier
+gradients at the same lr. The b-e runs stayed at 1e-3.
