@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import signal
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ import torch.distributed as dist
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core import Lattice, Structure
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader, PrefetchLoader
 from tqdm import tqdm, trange
@@ -164,8 +166,10 @@ def train(
     num_workers: int = 2,
     prefetch_factor: int = 2,
     async_dataloader: bool = True,
+    time_limit_hours: float | None = None,
 ) -> None:
     """Executes model training with periodic evaluation."""
+    t_start = time.monotonic()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -309,6 +313,7 @@ def train(
             resume_path = Path(resume)
 
     resume_wandb_id = None
+    resume_best_val_loss = float("inf")
     if resume_path and resume_path.exists():
         if is_main:
             print(f"Loading checkpoint from '{resume_path}' to resume...")
@@ -326,6 +331,7 @@ def train(
                 model.load_ema_state_dict(ckpt_data["ema_state_dict"], device=dev)
             start_epoch = ckpt_data.get("epoch", 0)
             resume_wandb_id = ckpt_data.get("wandb_run_id")
+            resume_best_val_loss = ckpt_data.get("best_val_loss", float("inf"))
             if is_main:
                 print(
                     f"Successfully resumed from epoch {start_epoch} (Last train loss: {ckpt_data.get('train_loss', 'N/A')})"
@@ -338,12 +344,24 @@ def train(
             if is_main:
                 print(f"Loaded model weights from legacy checkpoint '{resume_path}'")
 
-    best_val_loss = float("inf")
+    # Restored on resume: otherwise the first evaluation after every resume counts as
+    # an improvement and overwrites the best checkpoint with a possibly worse one.
+    best_val_loss = resume_best_val_loss
 
     def save_checkpoint(epoch_idx: int, train_loss_val: float, val_loss_val: float | None = None) -> None:
         nonlocal best_val_loss
         if not is_main:
             return
+        # Track the best validation loss independently of W&B: the caller uses it
+        # to decide whether an evaluation improved, so tying it to the logger
+        # would leave it at infinity for every run without --wandb.
+        is_best = (
+            val_loss_val is not None
+            and not np.isnan(val_loss_val)
+            and val_loss_val < best_val_loss
+        )
+        if is_best:
+            best_val_loss = val_loss_val
         ckpt = {
             "epoch": epoch_idx + 1,
             "model_type": model_type,
@@ -352,6 +370,7 @@ def train(
             "scheduler_state_dict": scheduler.state_dict(),
             "train_loss": train_loss_val,
             "val_loss": val_loss_val,
+            "best_val_loss": best_val_loss,
             "wandb_run_id": getattr(wandb_run, "id", None) if wandb_run is not None else None,
         }
         if hasattr(model, "ema_state_dict"):
@@ -365,16 +384,7 @@ def train(
         tmp_p.replace(p)
         print(f"Saved checkpoint (epoch {epoch_idx + 1}) to {ckpt_path}")
 
-        # Track the best validation loss independently of W&B: the caller uses it
-        # to decide whether an evaluation improved, so tying it to the logger
-        # would leave it at infinity for every run without --wandb.
-        is_best = (
-            val_loss_val is not None
-            and not np.isnan(val_loss_val)
-            and val_loss_val < best_val_loss
-        )
         if is_best:
-            best_val_loss = val_loss_val
             best_p = p.with_name(f"{p.stem}_best{p.suffix}")
             torch.save(ckpt, best_p.with_suffix(".tmp"))
             best_p.with_suffix(".tmp").replace(best_p)
@@ -402,6 +412,7 @@ def train(
             print(f"Uploaded checkpoint artifact to W&B (aliases: {aliases})")
 
     stop_requested = False
+    longest_epoch_s = 0.0
 
     def _sig_handler(signum, frame):
         nonlocal stop_requested
@@ -438,12 +449,22 @@ def train(
                 "max_atoms": max_atoms,
                 "hidden_dim_effective": arch_h,
                 "num_layers_effective": arch_l,
+                "train_csv": str(train_csv),
+                "test_csv": str(test_csv),
             },
         }
         if resume_wandb_id:
             wandb_kwargs["id"] = resume_wandb_id
             wandb_kwargs["resume"] = "allow"
         wandb_run = wandb.init(**wandb_kwargs)
+        # W&B cannot read the commit itself where git is absent (e.g. inside a
+        # container), so a launcher passes it in. A chained run records the commit
+        # of its latest link; earlier links' commits are in their job logs.
+        if os.environ.get("DIFFCSP_GIT_COMMIT"):
+            wandb_run.config.update(
+                {"git_commit": os.environ["DIFFCSP_GIT_COMMIT"], "git_branch": os.environ.get("DIFFCSP_GIT_BRANCH")},
+                allow_val_change=True,
+            )
 
     train_path = Path(train_csv)
     if not train_path.exists():
@@ -469,11 +490,19 @@ def train(
             train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         dist.barrier()
         train_sampler = DistributedSampler(train_set, shuffle=True, drop_last=True)
-        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, **loader_kwargs)
+        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=train_sampler, generator=torch.Generator().manual_seed(rank), **loader_kwargs)
     else:
         train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
-        train_sampler = None
-        train_loader = DataLoader(train_set, shuffle=True, batch_size=batch_size, **loader_kwargs)
+        # The shuffle has its own generator, reseeded every epoch, and the loader (which
+        # draws a worker base seed whenever it spawns workers -- once per process with
+        # persistent workers) another: neither then touches the global RNG, so the
+        # order and the diffusion noise of an epoch do not depend on where a run resumed.
+        shuffle_generator = torch.Generator()
+        train_sampler = RandomSampler(train_set, generator=shuffle_generator)
+        train_loader = DataLoader(
+            train_set, sampler=train_sampler, batch_size=batch_size,
+            generator=torch.Generator().manual_seed(rank), **loader_kwargs,
+        )
 
     if async_dataloader and dev.type == "cuda":
         train_loader = PrefetchLoader(train_loader, device=dev)
@@ -489,7 +518,10 @@ def train(
             dist.barrier()
         else:
             test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
-        test_loader = DataLoader(test_set, shuffle=False, batch_size=batch_size, **loader_kwargs)
+        test_loader = DataLoader(
+            test_set, shuffle=False, batch_size=batch_size,
+            generator=torch.Generator().manual_seed(rank), **loader_kwargs,
+        )
         if async_dataloader and dev.type == "cuda":
             test_loader = PrefetchLoader(test_loader, device=dev)
 
@@ -497,8 +529,15 @@ def train(
 
     epoch_iter = trange(start_epoch, epochs, desc="Epochs") if is_main else range(start_epoch, epochs)
     for epoch in epoch_iter:
-        if train_sampler is not None:
+        epoch_start = time.monotonic()
+        # Reseed per epoch so that the shuffle and the diffusion noise of epoch k do
+        # not depend on where the run was last resumed: a run chained across
+        # walltime-limited jobs then draws the same randomness as an uninterrupted one.
+        set_random_seed(17 + rank + 1_000_003 * epoch)
+        if isinstance(train_sampler, DistributedSampler):
             train_sampler.set_epoch(epoch)
+        else:
+            shuffle_generator.manual_seed(17 + 1_000_003 * epoch)
         ddp_model.train()
         train_losses = []
 
@@ -631,6 +670,16 @@ def train(
         if due_for_save or val_improved:
             save_checkpoint(epoch, avg_loss, current_val_loss)
 
+        # Stop while a further epoch as long as the longest so far still fits, so a
+        # walltime-limited job checkpoints on its own terms instead of relying on a
+        # signal reaching this process (container wrappers do not all forward one).
+        if time_limit_hours is not None:
+            longest_epoch_s = max(longest_epoch_s, time.monotonic() - epoch_start)
+            if time.monotonic() - t_start + longest_epoch_s > 3600 * time_limit_hours and epoch + 1 < epochs:
+                stop_requested = True
+                if is_main:
+                    print(f"[INFO] Time limit {time_limit_hours} h: no room for another {longest_epoch_s / 60:.1f} min epoch.")
+
         # Check for interrupt / stop request across ranks
         if is_ddp:
             stop_t = torch.tensor([1 if stop_requested else 0], device=dev)
@@ -640,6 +689,8 @@ def train(
 
         if stop_requested:
             save_checkpoint(epoch, avg_loss, log_data.get("val_loss"))
+            if is_main and wandb_run is not None:
+                wandb_run.log(log_data)
             if is_main:
                 print(f"\n[INFO] Training stopped gracefully at epoch {epoch}. Resume anytime with --resume {ckpt_path}.")
             if is_ddp:
@@ -755,6 +806,10 @@ def main() -> None:
         help="Disable asynchronous PrefetchLoader",
     )
     parser.set_defaults(async_dataloader=True)
+    parser.add_argument(
+        "--time_limit_hours", type=float, default=None,
+        help="Checkpoint and exit cleanly once another epoch would overrun this many hours of wall time",
+    )
     args = parser.parse_args()
 
     train(
@@ -788,6 +843,7 @@ def main() -> None:
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         async_dataloader=args.async_dataloader,
+        time_limit_hours=args.time_limit_hours,
     )
 
 

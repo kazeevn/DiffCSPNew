@@ -1,0 +1,105 @@
+#!/bin/bash
+# Self-chaining DiffCSP training on the ASPIRE 2A AI partition (1x A100, <= 24 h per link).
+#
+# Submit from a clean checkout, preferably a dedicated worktree that stays on its branch
+# for the life of the chain:
+#
+#   qsub -v "REPO=$PWD,RUN_NAME=<name>,TRAIN_ARGS=<diffcsp.cli.train arguments>" \
+#        scripts/platforms/aspire2a/train_chain.pbs
+#
+# Each link resumes $RUNS/<RUN_NAME>/<RUN_NAME>.pt (model, optimiser, scheduler, EMA,
+# epoch, W&B run id, best val loss), trains with --time_limit_hours so train.py checkpoints
+# and exits by itself while an epoch still fits before the wall, and re-submits itself while
+# the checkpoint's epoch is below --epochs. It stops on completion, on a dirty checkout or
+# a changed commit (PIN_COMMIT=1, the default: one run, one commit), or after MAX_FAILS
+# consecutive links that made no progress.
+#
+# Not `timeout`: its SIGTERM stops the site's bash `singularity` wrapper, not the
+# containerised python, which is left running orphaned.
+#
+# Graph caches must already exist (scripts/preprocess_dataset.py): building one here
+# would spend GPU hours on CPU work.
+#PBS -N dcsp_chain
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
+#PBS -l walltime=23:59:59
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/diffcsp/
+
+set -euo pipefail
+: "${REPO:?REPO must name the checkout to train from}"
+: "${RUN_NAME:?}"
+: "${TRAIN_ARGS:?}"
+RUNS=${RUNS:-/scratch/users/nus/kna/WyFormer/runs/diffcsp}
+TIME_LIMIT_HOURS=${TIME_LIMIT_HOURS:-22.75}   # the rest covers startup, the final checkpoint upload and qsub
+MAX_FAILS=${MAX_FAILS:-2}
+FAILS=${FAILS:-0}
+PIN_COMMIT=${PIN_COMMIT:-1}
+LINK=${LINK:-1}
+
+set +u  # the module system reads unset variables
+type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+module load git/2.39.2
+set -u
+cd "$REPO"
+
+commit=$(git rev-parse HEAD)
+branch=$(git rev-parse --abbrev-ref HEAD)
+echo "[$(date -Is)] link $LINK of $RUN_NAME on $(hostname), job ${PBS_JOBID:-none}, $branch@$commit"
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    echo "STOP: $REPO has uncommitted changes:"; git status --short
+    exit 1
+fi
+if [ "$PIN_COMMIT" = 1 ] && [ -n "${COMMIT:-}" ] && [ "$commit" != "$COMMIT" ]; then
+    echo "STOP: $REPO is at $commit, but this chain was pinned to $COMMIT. Resubmit with COMMIT=$commit to continue deliberately."
+    exit 1
+fi
+COMMIT=$commit
+
+run_dir="$RUNS/$RUN_NAME"
+ckpt="$run_dir/$RUN_NAME.pt"
+mkdir -p "$run_dir"
+
+ckpt_epoch() {
+    [ -f "$ckpt" ] || { echo 0; return; }
+    bash scripts/platforms/aspire2a/run_in_singularity.sh python -c \
+        "import torch,sys; print(torch.load(sys.argv[1], map_location='cpu', weights_only=False)['epoch'])" \
+        "$ckpt" 2>/dev/null | tail -1
+}
+target_epochs=$(grep -oP -- '--epochs[ =]\K[0-9]+' <<< "$TRAIN_ARGS")
+before=$(ckpt_epoch)
+echo "checkpoint epoch $before / $target_epochs"
+
+export DIFFCSP_GIT_COMMIT=$commit DIFFCSP_GIT_BRANCH=$branch
+export WANDB_DIR=/scratch/users/nus/kna/WyFormer WANDB_RUN_GROUP=$RUN_NAME
+export OMP_NUM_THREADS=${NCPUS:-16}
+# Peak memory sits near the A100-40GB ceiling on batches of large cells; expandable
+# segments keep fragmentation from turning that into an OOM.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+set +e
+# shellcheck disable=SC2086
+bash scripts/platforms/aspire2a/run_in_singularity.sh python -m diffcsp.cli.train \
+    $TRAIN_ARGS --resume auto --ckpt_path "$ckpt" --time_limit_hours "$TIME_LIMIT_HOURS"
+rc=$?
+set -e
+after=$(ckpt_epoch)
+echo "[$(date -Is)] train.py exited $rc; checkpoint epoch $before -> $after / $target_epochs"
+
+if [ "$after" -ge "$target_epochs" ]; then
+    echo "DONE: $RUN_NAME reached epoch $after."
+    exit 0
+fi
+if [ "$after" -le "$before" ]; then
+    FAILS=$((FAILS + 1))
+    if [ "$FAILS" -ge "$MAX_FAILS" ]; then
+        echo "STOP: $FAILS consecutive links made no progress."
+        exit 1
+    fi
+else
+    FAILS=0
+fi
+next=$(qsub -N "${PBS_JOBNAME:-dcsp_chain}" \
+    -v "REPO=$REPO,RUN_NAME=$RUN_NAME,TRAIN_ARGS=$TRAIN_ARGS,RUNS=$RUNS,TIME_LIMIT_HOURS=$TIME_LIMIT_HOURS,MAX_FAILS=$MAX_FAILS,FAILS=$FAILS,PIN_COMMIT=$PIN_COMMIT,COMMIT=$COMMIT,LINK=$((LINK + 1))" \
+    "$REPO/scripts/platforms/aspire2a/train_chain.pbs")
+echo "submitted link $((LINK + 1)): $next"
