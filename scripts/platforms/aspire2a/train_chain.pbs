@@ -1,11 +1,15 @@
 #!/bin/bash
-# Self-chaining DiffCSP training on the ASPIRE 2A AI partition (1x A100, <= 24 h per link).
+# Self-chaining DiffCSP training on the ASPIRE 2A AI partition (1 or 4 A100s, <= 24 h per link).
 #
 # Submit from a clean checkout, preferably a dedicated worktree that stays on its branch
 # for the life of the chain:
 #
 #   qsub -v "REPO=$PWD,RUN_NAME=<name>,TRAIN_ARGS=<diffcsp.cli.train arguments>" \
 #        scripts/platforms/aspire2a/train_chain.pbs
+#
+# NGPUS=4 (with a matching `-l select=1:ngpus=4:ncpus=64:mem=440gb` on the first qsub, which
+# routes to aiq3) runs train.py under torch.distributed.run, one rank per GPU; every later
+# link is submitted with the same resources.
 #
 # Each link resumes $RUNS/<RUN_NAME>/<RUN_NAME>.pt (model, optimiser, scheduler, EMA,
 # epoch, W&B run id, best val loss), trains with --time_limit_hours so train.py checkpoints
@@ -37,6 +41,9 @@ MAX_FAILS=${MAX_FAILS:-2}
 FAILS=${FAILS:-0}
 PIN_COMMIT=${PIN_COMMIT:-1}
 LINK=${LINK:-1}
+NGPUS=${NGPUS:-1}
+JOB_NCPUS=${JOB_NCPUS:-$((16 * NGPUS))}
+JOB_MEM=${JOB_MEM:-$([ "$NGPUS" -ge 4 ] && echo 440gb || echo 110gb)}
 
 set +u  # the module system reads unset variables
 type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
@@ -73,13 +80,18 @@ echo "checkpoint epoch $before / $target_epochs"
 
 export DIFFCSP_GIT_COMMIT=$commit DIFFCSP_GIT_BRANCH=$branch
 export WANDB_DIR=/scratch/users/nus/kna/WyFormer WANDB_RUN_GROUP=$RUN_NAME
-export OMP_NUM_THREADS=${NCPUS:-16}
+export OMP_NUM_THREADS=$(( ${NCPUS:-$JOB_NCPUS} / NGPUS ))
 # Peak memory sits near the A100-40GB ceiling on batches of large cells; expandable
 # segments keep fragmentation from turning that into an OOM.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set +e
+if [ "$NGPUS" -gt 1 ]; then
+    launcher="python -m torch.distributed.run --standalone --nproc_per_node=$NGPUS -m diffcsp.cli.train"
+else
+    launcher="python -m diffcsp.cli.train"
+fi
 # shellcheck disable=SC2086
-bash scripts/platforms/aspire2a/run_in_singularity.sh python -m diffcsp.cli.train \
+bash scripts/platforms/aspire2a/run_in_singularity.sh $launcher \
     $TRAIN_ARGS --resume auto --ckpt_path "$ckpt" --time_limit_hours "$TIME_LIMIT_HOURS"
 rc=$?
 set -e
@@ -100,6 +112,7 @@ else
     FAILS=0
 fi
 next=$(qsub -N "${PBS_JOBNAME:-dcsp_chain}" \
-    -v "REPO=$REPO,RUN_NAME=$RUN_NAME,TRAIN_ARGS=$TRAIN_ARGS,RUNS=$RUNS,TIME_LIMIT_HOURS=$TIME_LIMIT_HOURS,MAX_FAILS=$MAX_FAILS,FAILS=$FAILS,PIN_COMMIT=$PIN_COMMIT,COMMIT=$COMMIT,LINK=$((LINK + 1))" \
+    -l "select=1:ngpus=$NGPUS:ncpus=$JOB_NCPUS:mem=$JOB_MEM" \
+    -v "REPO=$REPO,RUN_NAME=$RUN_NAME,TRAIN_ARGS=$TRAIN_ARGS,RUNS=$RUNS,TIME_LIMIT_HOURS=$TIME_LIMIT_HOURS,MAX_FAILS=$MAX_FAILS,FAILS=$FAILS,PIN_COMMIT=$PIN_COMMIT,COMMIT=$COMMIT,LINK=$((LINK + 1)),NGPUS=$NGPUS,JOB_NCPUS=$JOB_NCPUS,JOB_MEM=$JOB_MEM" \
     "$REPO/scripts/platforms/aspire2a/train_chain.pbs")
 echo "submitted link $((LINK + 1)): $next"

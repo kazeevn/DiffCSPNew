@@ -1,0 +1,37 @@
+#!/bin/bash
+# Packs CIF tables into memory-mapped splits (scripts/pack_dataset.py) on a CPU node.
+#
+#   qsub -v "REPO=$PWD,SRC=<dir with train/val/test.csv.gz>,OUT=<packed root>,PROPS=<columns>" \
+#        scripts/platforms/aspire2a/pack_dataset.pbs
+#
+# CPU work on the general partition (pbs101), not GPU time. Resumable: a split whose
+# meta.json exists is skipped, and a partial one continues from its finished chunks.
+#PBS -N dcsp_pack
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ncpus=128:mem=440gb
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/diffcsp/
+
+set -euo pipefail
+: "${REPO:?}" "${SRC:?}" "${OUT:?}" "${PROPS:?}"
+SPLITS=${SPLITS:-"val test train"}
+set +u
+type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+module load git/2.39.2
+set -u
+cd "$REPO"
+commit=$(git rev-parse HEAD)
+echo "[$(date -Is)] packing $SRC -> $OUT on $(hostname), $(git rev-parse --abbrev-ref HEAD)@$commit"
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    echo "STOP: $REPO has uncommitted changes:"; git status --short
+    exit 1
+fi
+export DIFFCSP_GIT_COMMIT=$commit OMP_NUM_THREADS=1
+for split in $SPLITS; do
+    # shellcheck disable=SC2086
+    bash scripts/platforms/aspire2a/run_in_singularity.sh python scripts/pack_dataset.py \
+        "$SRC/$split.csv.gz" "$OUT/$split" --props $PROPS --n_jobs "${NCPUS:-128}"
+done
+echo "[$(date -Is)] done"

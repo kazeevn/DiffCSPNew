@@ -4,9 +4,11 @@ import argparse
 import logging
 import os
 import random
+import math
 import signal
 import time
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from torch_geometric.loader import DataLoader, PrefetchLoader
 from tqdm import tqdm, trange
 
 from diffcsp.data.dataset import CrystDataset
+from diffcsp.data.packed import EdgeBudgetBatchSampler, PackedCrystDataset
 from diffcsp.models.cspnet import CSPNet
 from diffcsp.models.diffusion import CSPDiffusion
 from diffcsp.models.diffusion_orb import CSPDiffusionORB
@@ -167,8 +170,27 @@ def train(
     prefetch_factor: int = 2,
     async_dataloader: bool = True,
     time_limit_hours: float | None = None,
+    data_dir: str | None = None,
+    max_edges_per_batch: int | None = None,
+    cond_props: list[str] | None = None,
+    cond_drop_prob: float = 0.0,
+    warmup_steps: int | None = None,
+    extra_val_max_e_hull: float | None = None,
+    wandb_name: str | None = None,
+    wandb_tags: list[str] | None = None,
 ) -> None:
-    """Executes model training with periodic evaluation."""
+    """Executes model training with periodic evaluation.
+
+    With ``data_dir`` (a packed dataset from ``scripts/pack_dataset.py``) the train and
+    validation splits are ``<data_dir>/train`` and ``<data_dir>/val``, batches are formed
+    by ``max_edges_per_batch`` (sum of N^2 per rank) instead of ``batch_size``, and, with
+    ``warmup_steps``, the learning rate follows a per-step linear warmup and cosine decay.
+    """
+    cond_props = list(cond_props or [])
+    if cond_props and model_type != "geov2":
+        raise ValueError("Property conditioning is implemented for --model geov2 only")
+    if (cond_props or max_edges_per_batch) and not data_dir:
+        raise ValueError("--cond_props and --max_edges_per_batch need a packed --data_dir")
     t_start = time.monotonic()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
@@ -178,7 +200,9 @@ def train(
     if is_ddp:
         torch.cuda.set_device(local_rank)
         dev = torch.device(f"cuda:{local_rank}")
-        dist.init_process_group(backend="nccl", device_id=dev)
+        # Rank 0 validates, checkpoints and uploads while the others wait at a barrier;
+        # the default 10 min collective timeout is too tight for that on a big split.
+        dist.init_process_group(backend="nccl", device_id=dev, timeout=timedelta(hours=1))
     else:
         dev = torch.device(device)
 
@@ -254,12 +278,16 @@ def train(
             print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
     elif model_type == "geov2":
         model = GeoV2Diffusion(
-            device=dev, decoder=GeoV2CSPNet(hidden_dim=arch_h, num_layers=arch_l)
+            device=dev,
+            decoder=GeoV2CSPNet(hidden_dim=arch_h, num_layers=arch_l, cond_props=cond_props),
+            cond_drop_prob=cond_drop_prob,
         ).to(dev)
         model.init_ema(decay=0.9999)
         params_to_train = list(model.parameters())
         if is_main:
             print(f"GeoV2CSPNet: hidden_dim={arch_h} num_layers={arch_l}")
+            if cond_props:
+                print(f"Conditioned on {cond_props}, condition dropout {cond_drop_prob}")
             print(f"Total params: {sum(p.numel() for p in params_to_train):,}")
     elif model_type == "geo_orb":
         model = GeoOrbDiffusion(
@@ -286,7 +314,51 @@ def train(
     else:
         ddp_model = model
 
-    if model_type in ("geov2", "geo_orb"):
+    # A packed dataset is memory-mapped, so opening it is cheap and every rank can do
+    # it before the scheduler, which needs the number of steps per epoch.
+    packed_train = packed_val = packed_extra_val = train_batch_sampler = None
+    if data_dir:
+        packed_train = PackedCrystDataset(
+            Path(data_dir) / "train", cond_props=cond_props, max_atoms=max_atoms,
+            max_e_hull=max_e_hull, max_samples=max_train_samples,
+        )
+        train_batch_sampler = EdgeBudgetBatchSampler(
+            packed_train.sizes(), max_edges=max_edges_per_batch or 64_000, shuffle=True,
+            seed=17, rank=rank, world_size=world_size,
+        )
+        if (Path(data_dir) / "val" / "meta.json").exists():
+            packed_val = PackedCrystDataset(
+                Path(data_dir) / "val", cond_props=cond_props, max_atoms=max_atoms,
+                max_e_hull=max_e_hull, max_samples=max_test_samples,
+            )
+            if extra_val_max_e_hull is not None:
+                packed_extra_val = PackedCrystDataset(
+                    Path(data_dir) / "val", cond_props=cond_props, max_atoms=max_atoms,
+                    max_e_hull=extra_val_max_e_hull, max_samples=max_test_samples,
+                )
+        if is_main:
+            for name, ds in (("train", packed_train), ("val", packed_val), ("extra val", packed_extra_val)):
+                if ds is not None:
+                    print(f"{name}: {len(ds):,} structures from {ds.split_dir} ({'; '.join(ds.filter_log) or 'unfiltered'})")
+            print(f"{len(train_batch_sampler):,} steps per epoch per rank at <= {train_batch_sampler.max_edges:,} edges per batch")
+
+    per_step_schedule = warmup_steps is not None
+    if per_step_schedule:
+        if train_batch_sampler is None:
+            raise ValueError("--warmup_steps needs a packed --data_dir")
+        steps_per_epoch = len(train_batch_sampler)
+        total_steps = max(1, epochs * steps_per_epoch)
+        min_lr_ratio = 1e-6 / lr
+
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return 0.01 + 0.99 * step / max(1, warmup_steps)
+            progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps))
+            return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+
+        optimizer = torch.optim.AdamW(params_to_train, lr=lr, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    elif model_type in ("geov2", "geo_orb"):
         optimizer = torch.optim.AdamW(params_to_train, lr=lr, weight_decay=1e-4)
         warmup_epochs = min(10, max(1, epochs // 10))
         scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
@@ -365,6 +437,12 @@ def train(
         ckpt = {
             "epoch": epoch_idx + 1,
             "model_type": model_type,
+            "model_config": {
+                "hidden_dim": arch_h,
+                "num_layers": arch_l,
+                "cond_props": cond_props,
+                "cond_drop_prob": cond_drop_prob,
+            },
             "model_state_dict": _adapter_state_dict(model.decoder) if model_type == "orb" else model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
@@ -451,8 +529,22 @@ def train(
                 "num_layers_effective": arch_l,
                 "train_csv": str(train_csv),
                 "test_csv": str(test_csv),
+                "data_dir": data_dir,
+                "data_meta": packed_train.meta if packed_train is not None else None,
+                "n_train": len(packed_train) if packed_train is not None else None,
+                "n_val": len(packed_val) if packed_val is not None else None,
+                "max_edges_per_batch": max_edges_per_batch,
+                "steps_per_epoch": len(train_batch_sampler) if train_batch_sampler is not None else None,
+                "cond_props": cond_props,
+                "cond_drop_prob": cond_drop_prob,
+                "warmup_steps": warmup_steps,
+                "extra_val_max_e_hull": extra_val_max_e_hull,
             },
         }
+        if wandb_name:
+            wandb_kwargs["name"] = wandb_name
+        if wandb_tags:
+            wandb_kwargs["tags"] = wandb_tags
         if resume_wandb_id:
             wandb_kwargs["id"] = resume_wandb_id
             wandb_kwargs["resume"] = "allow"
@@ -467,7 +559,7 @@ def train(
             )
 
     train_path = Path(train_csv)
-    if not train_path.exists():
+    if packed_train is None and not train_path.exists():
         if is_main:
             print(f"Dataset '{train_csv}' not found. Exiting training.")
         return
@@ -481,8 +573,15 @@ def train(
         loader_kwargs["prefetch_factor"] = prefetch_factor
         loader_kwargs["worker_init_fn"] = _worker_init_fn
 
+    extra_val_loader = None
+    if packed_train is not None:
+        train_sampler = train_batch_sampler
+        train_loader = DataLoader(
+            packed_train, batch_sampler=train_batch_sampler,
+            generator=torch.Generator().manual_seed(rank), **loader_kwargs,
+        )
     # In DDP, avoid race conditions during initial dataset cache extraction
-    if is_ddp:
+    elif is_ddp:
         if is_main:
             train_set = CrystDataset(train_path, mode="train_sym", max_samples=max_train_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
         dist.barrier()
@@ -508,7 +607,25 @@ def train(
         train_loader = PrefetchLoader(train_loader, device=dev)
 
     test_loader = None
-    if test_csv and Path(test_csv).exists():
+    if packed_train is not None:
+        val_kwargs = dict(loader_kwargs, num_workers=min(num_workers, 4))
+        if val_kwargs["num_workers"] == 0:
+            val_kwargs = {"pin_memory": loader_kwargs["pin_memory"]}
+        for ds, which in ((packed_val, "val"), (packed_extra_val, "extra")):
+            if ds is None:
+                continue
+            loader = DataLoader(
+                ds,
+                batch_sampler=EdgeBudgetBatchSampler(ds.sizes(), max_edges=max_edges_per_batch or 64_000, shuffle=False),
+                **val_kwargs,
+            )
+            if async_dataloader and dev.type == "cuda":
+                loader = PrefetchLoader(loader, device=dev)
+            if which == "val":
+                test_loader = loader
+            else:
+                extra_val_loader = loader
+    elif test_csv and Path(test_csv).exists():
         if is_ddp:
             if is_main:
                 test_set = CrystDataset(Path(test_csv), mode="test_sym", max_samples=max_test_samples, cache_dir=cache_dir, max_energy_above_hull=max_e_hull, max_atoms=max_atoms)
@@ -534,12 +651,14 @@ def train(
         # not depend on where the run was last resumed: a run chained across
         # walltime-limited jobs then draws the same randomness as an uninterrupted one.
         set_random_seed(17 + rank + 1_000_003 * epoch)
-        if isinstance(train_sampler, DistributedSampler):
+        if isinstance(train_sampler, (DistributedSampler, EdgeBudgetBatchSampler)):
             train_sampler.set_epoch(epoch)
         else:
             shuffle_generator.manual_seed(17 + 1_000_003 * epoch)
         ddp_model.train()
         train_losses = []
+        n_train_structures = 0
+        n_skipped_steps = 0
 
         batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False) if is_main else train_loader
         for batch in batch_iter:
@@ -554,13 +673,33 @@ def train(
                     ).long().clamp(0, 3)
             out = ddp_model(batch)
             loss = out.get("loss")
-            if loss is None or torch.isnan(loss):
+            if loss is None:
                 continue
+            if is_ddp:
+                # Every rank must reach the gradient all-reduce, so a non-finite loss
+                # is not skipped before backward (that would hang the others): DDP
+                # averages the gradients, all ranks then see the same non-finite
+                # values, and all skip the same step.
+                loss.backward()
+                grads = [p.grad for p in params_to_train if p.grad is not None]
+                grads_ok = bool(torch.isfinite(torch.stack(torch._foreach_norm(grads))).all())
+                if not grads_ok:
+                    n_skipped_steps += 1
+                    optimizer.zero_grad(set_to_none=True)
+                    if per_step_schedule:
+                        scheduler.step()
+                    continue
+            elif torch.isnan(loss):
+                continue
+            else:
+                loss.backward()
 
             train_losses.append(loss.item())
-            loss.backward()
+            n_train_structures += batch.num_graphs
             torch.nn.utils.clip_grad_value_(params_to_train, 0.4)
             optimizer.step()
+            if per_step_schedule:
+                scheduler.step()
             if model_type in ("geov2", "geo_orb"):
                 if is_ddp:
                     ddp_model.module.update_ema()
@@ -578,9 +717,20 @@ def train(
 
         if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             scheduler.step(avg_loss)
-        else:
+        elif not per_step_schedule:
             scheduler.step()
         log_data = {"epoch": epoch, "train_loss": avg_loss, "lr": optimizer.param_groups[0]["lr"]}
+        epoch_train_s = time.monotonic() - epoch_start
+        if is_ddp:
+            counts = torch.tensor([n_train_structures, n_skipped_steps], device=dev)
+            dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+            n_train_structures, n_skipped_steps = (int(c) for c in counts.tolist())
+        log_data.update(
+            epoch_train_minutes=epoch_train_s / 60,
+            train_structures_per_s=n_train_structures / max(epoch_train_s, 1e-9),
+            skipped_steps=n_skipped_steps,
+            peak_gpu_mem_gib=torch.cuda.max_memory_allocated(dev) / 2**30 if dev.type == "cuda" else 0.0,
+        )
         if is_main:
             print(f"Epoch {epoch:03d} | Train Loss: {avg_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
 
@@ -589,8 +739,33 @@ def train(
             model.eval()
             ema_ctx = model.ema_scope() if (hasattr(model, "ema_scope") and model.ema is not None) else nullcontext()
             with ema_ctx, torch.no_grad():
+
+                def _val_loss(loader: Any, uncond: bool = False) -> float:
+                    # Same diffusion times and noise at every evaluation, so the curve
+                    # moves with the model rather than with the draw.
+                    set_random_seed(123_457)
+                    losses = []
+                    for vb in loader:
+                        vb = vb.to(dev, non_blocking=True)
+                        if uncond:
+                            vb.props = None
+                        vloss = model.training_step(vb, 0)
+                        if vloss is not None:
+                            losses.append(vloss.item())
+                    return float(np.mean(losses)) if losses else float("nan")
+
+                if packed_val is not None:
+                    log_data["val_loss"] = avg_val_loss = _val_loss(test_loader)
+                    if cond_props and cond_drop_prob > 0:
+                        log_data["val_loss_uncond"] = _val_loss(test_loader, uncond=True)
+                    if extra_val_loader is not None:
+                        key = f"val_loss_ehull{extra_val_max_e_hull:g}"
+                        log_data[key] = _val_loss(extra_val_loader)
+                        if cond_props and cond_drop_prob > 0:
+                            log_data[key + "_uncond"] = _val_loss(extra_val_loader, uncond=True)
+                    print(f"Epoch {epoch:03d} | " + " | ".join(f"{k}: {v:.4f}" for k, v in log_data.items() if k.startswith("val_loss")))
                 val_losses = []
-                for batch in tqdm(test_loader, desc="Validating", leave=False):
+                for batch in (tqdm(test_loader, desc="Validating", leave=False) if packed_val is None else []):
                     batch = batch.to(dev, non_blocking=True)
                     if model_type in ("geo", "geov2", "geo_orb"):
                         if not hasattr(batch, "multiplicities"):
@@ -604,9 +779,10 @@ def train(
                     if loss is not None:
                         val_losses.append(loss.item())
 
-                avg_val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
-                log_data["val_loss"] = avg_val_loss
-                print(f"Epoch {epoch:03d} | Val Loss: {avg_val_loss:.4f}")
+                if packed_val is None:
+                    avg_val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
+                    log_data["val_loss"] = avg_val_loss
+                    print(f"Epoch {epoch:03d} | Val Loss: {avg_val_loss:.4f}")
 
                 if eval_sample:
                     frac_coords_list, num_atoms_list, atom_types_list, lattices_list, input_data_list = (
@@ -810,6 +986,32 @@ def main() -> None:
         "--time_limit_hours", type=float, default=None,
         help="Checkpoint and exit cleanly once another epoch would overrun this many hours of wall time",
     )
+    parser.add_argument(
+        "--data_dir", type=str, default=None,
+        help="Packed dataset root (scripts/pack_dataset.py) with train/ and val/ splits; replaces --train_csv/--test_csv",
+    )
+    parser.add_argument(
+        "--max_edges_per_batch", type=int, default=None,
+        help="With --data_dir: batch by a budget of sum(N^2) full-cell edges per rank instead of --batch_size",
+    )
+    parser.add_argument(
+        "--cond_props", nargs="*", default=[],
+        help="Scalar properties to condition on (geov2 only), e.g. energy_above_hull",
+    )
+    parser.add_argument(
+        "--cond_drop_prob", type=float, default=0.0,
+        help="Probability of dropping a structure's condition in training (> 0 enables classifier-free guidance)",
+    )
+    parser.add_argument(
+        "--warmup_steps", type=int, default=None,
+        help="Per-step schedule: linear warmup over this many steps, then cosine to 1e-6 over --epochs",
+    )
+    parser.add_argument(
+        "--extra_val_max_e_hull", type=float, default=None,
+        help="Also report the validation loss on val structures with E_hull <= this value",
+    )
+    parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
+    parser.add_argument("--wandb_tags", nargs="*", default=None, help="W&B run tags")
     args = parser.parse_args()
 
     train(
@@ -844,6 +1046,14 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         async_dataloader=args.async_dataloader,
         time_limit_hours=args.time_limit_hours,
+        data_dir=args.data_dir,
+        max_edges_per_batch=args.max_edges_per_batch,
+        cond_props=args.cond_props,
+        cond_drop_prob=args.cond_drop_prob,
+        warmup_steps=args.warmup_steps,
+        extra_val_max_e_hull=args.extra_val_max_e_hull,
+        wandb_name=args.wandb_name,
+        wandb_tags=args.wandb_tags,
     )
 
 

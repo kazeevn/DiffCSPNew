@@ -5,6 +5,8 @@ DiffCSP-GeoV2 diffusion integrates:
 2. Annealed predictor-corrector sampler (base step_lr=5e-6 decaying smoothly as t -> 0).
 3. Free-DoF loss masking and Lie-algebra Wyckoff tangent space noise injection.
 4. Exact locking of 0-DoF coordinates to prevent numerical drift.
+5. Optional scalar property conditioning (``batch.props``), with condition dropout
+   during training and classifier-free guidance at sampling time.
 """
 
 from contextlib import contextmanager
@@ -90,6 +92,7 @@ class GeoV2Diffusion(CSPDiffusion):
         sigma_begin: float = 0.005,
         sigma_end: float = 0.5,
         ema_decay: float = 0.9999,
+        cond_drop_prob: float = 0.0,
     ) -> None:
         decoder = decoder if decoder is not None else GeoV2CSPNet()
         super().__init__(
@@ -103,6 +106,51 @@ class GeoV2Diffusion(CSPDiffusion):
         )
         self.ema_decay = ema_decay
         self.ema: EMAModel | None = None
+        # Probability of replacing a structure's condition by the null token while
+        # training; > 0 trains the unconditional model classifier-free guidance needs.
+        self.cond_drop_prob = cond_drop_prob
+
+    @property
+    def cond_props(self) -> list[str]:
+        return list(getattr(self.decoder, "cond_props", []))
+
+    def _condition(self, batch: Any, batch_size: int) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Returns (props, props_mask) for the decoder: dropped at random while training."""
+        if not self.cond_props:
+            return None, None
+        props = getattr(batch, "props", None)
+        if props is None:
+            return None, None
+        props = props.view(batch_size, -1).to(self.device)
+        if self.training and self.cond_drop_prob > 0:
+            mask = torch.rand(batch_size, device=self.device) >= self.cond_drop_prob
+        else:
+            mask = torch.ones(batch_size, dtype=torch.bool, device=self.device)
+        return props, mask
+
+    def _guided_decoder(
+        self,
+        props: torch.Tensor | None,
+        guidance_scale: float,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Decoder call with classifier-free guidance.
+
+        ``guidance_scale`` w mixes the conditional and unconditional predictions as
+        uncond + w * (cond - uncond): w = 1 is plain conditional sampling, w = 0
+        unconditional, w > 1 pushes further towards the condition. Both outputs, the
+        lattice and the coordinate scores, are guided.
+        """
+        if props is None:
+            return self.decoder(*args, **kwargs)
+        B = props.shape[0]
+        on = torch.ones(B, dtype=torch.bool, device=props.device)
+        lat_c, x_c = self.decoder(*args, props=props, props_mask=on, **kwargs)
+        if guidance_scale == 1.0:
+            return lat_c, x_c
+        lat_u, x_u = self.decoder(*args, props=props, props_mask=~on, **kwargs)
+        return lat_u + guidance_scale * (lat_c - lat_u), x_u + guidance_scale * (x_c - x_u)
 
     def init_ema(self, decay: float | None = None) -> None:
         """Initializes EMA shadow parameters."""
@@ -241,6 +289,7 @@ class GeoV2Diffusion(CSPDiffusion):
         input_crys_fam = c0[:, None] * ori_crys_fam + c1[:, None] * rand_crys_fam
         input_crys_fam = self.crystal_family.proj_k_to_spacegroup(input_crys_fam, batch.spacegroup)
 
+        props, props_mask = self._condition(batch, batch_size)
         pred_crys_fam, pred_x = self.decoder(
             time_emb,
             batch.atom_types,
@@ -252,6 +301,8 @@ class GeoV2Diffusion(CSPDiffusion):
             multiplicities=multiplicities,
             dofs=dofs,
             site_projectors=Pj,
+            props=props,
+            props_mask=props_mask,
         )
         pred_crys_fam = self.crystal_family.proj_k_to_spacegroup(pred_crys_fam, batch.spacegroup)
 
@@ -287,6 +338,7 @@ class GeoV2Diffusion(CSPDiffusion):
         anneal_corrector: bool = True,
         noise_cutoff_t: int = 0,
         use_ema: bool = False,
+        guidance_scale: float = 1.0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Annealed Predictor-Corrector sampling preserving exact 0-DoF sites and tangent projections.
 
@@ -298,6 +350,8 @@ class GeoV2Diffusion(CSPDiffusion):
             anneal_corrector: If True, decays corrector step size smoothly as t -> 0.
             noise_cutoff_t: Timestep below which Langevin and predictor noise is disabled.
             use_ema: If True and EMA shadow model is available, uses EMA weights for sampling.
+            guidance_scale: Classifier-free guidance weight for a conditional model given
+                ``batch.props`` (1 = conditional, 0 = unconditional); ignored otherwise.
         """
         if use_ema and self.ema is not None:
             with self.ema_scope():
@@ -308,6 +362,7 @@ class GeoV2Diffusion(CSPDiffusion):
                     orbit_average=orbit_average,
                     anneal_corrector=anneal_corrector,
                     noise_cutoff_t=noise_cutoff_t,
+                    guidance_scale=guidance_scale,
                 )
         return self._sample_impl(
             batch=batch,
@@ -316,6 +371,7 @@ class GeoV2Diffusion(CSPDiffusion):
             orbit_average=orbit_average,
             anneal_corrector=anneal_corrector,
             noise_cutoff_t=noise_cutoff_t,
+            guidance_scale=guidance_scale,
         )
 
     @torch.no_grad()
@@ -327,9 +383,11 @@ class GeoV2Diffusion(CSPDiffusion):
         orbit_average: bool = True,
         anneal_corrector: bool = True,
         noise_cutoff_t: int = 0,
+        guidance_scale: float = 1.0,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         batch_size = batch.batch_size if hasattr(batch, "batch_size") else batch.num_graphs
         Pa, Pj, dofs, multiplicities, spacegroups = self.derive_wyckoff_symmetries(batch)
+        props, _ = self._condition(batch, batch_size)
         free_mask = (dofs > 0)
         is_zero_dof = ~free_mask
 
@@ -416,7 +474,9 @@ class GeoV2Diffusion(CSPDiffusion):
             )
             rand_x = (R @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
 
-            _, pred_x = self.decoder(
+            _, pred_x = self._guided_decoder(
+                props,
+                guidance_scale,
                 time_emb,
                 batch.atom_types,
                 cur_x,
@@ -484,7 +544,9 @@ class GeoV2Diffusion(CSPDiffusion):
             )
             rand_x = (R @ rand_x_anchor.unsqueeze(-1)).squeeze(-1)
 
-            pred_crys_fam, pred_x = self.decoder(
+            pred_crys_fam, pred_x = self._guided_decoder(
+                props,
+                guidance_scale,
                 time_emb,
                 batch.atom_types,
                 x_half,
