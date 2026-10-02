@@ -35,3 +35,4 @@ data/**/*.json.gz
 # Checkpoints
 *.pt
 !data/mp-20/test_ckpt.pt
+.env
