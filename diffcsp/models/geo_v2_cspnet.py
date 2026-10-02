@@ -10,8 +10,11 @@ diversity and all-to-all Fourier torus coverage, building on DiffCSP-Geo with ke
    coordinate head on node features, projected onto the Lie-algebra stabilizer tangent space P_j.
 4. Physical Euclidean distances, Bessel RBFs, and Cartesian direction vectors.
 5. Rich crystallographic conditioning: element Z, spacegroup G, multiplicity m, site DoF.
+6. Optional scalar property conditioning (e.g. energy above hull), added to the time
+   embedding, with a learned null embedding for classifier-free guidance.
 """
 
+from collections.abc import Sequence
 from typing import Any
 import torch
 import torch.nn as nn
@@ -23,6 +26,57 @@ from diffcsp.models.layers import SinusoidsEmbedding, generate_intra_crystal_edg
 from diffcsp.models.painn_layers import bessel_rbf
 
 MAX_ATOMIC_NUM = 100
+
+#: Value range each conditioning property is clamped to before its RBF expansion, in
+#: eV/atom. E_hull: 99th percentile of LeMat-Bulk fmax1_stress is 2.7; formation
+#: energy: 0.1st-99.9th percentile -3.5..3.7.
+PROPERTY_RANGES: dict[str, tuple[float, float]] = {
+    "energy_above_hull": (0.0, 3.0),
+    "formation_energy_per_atom": (-5.0, 4.0),
+}
+
+
+class PropertyEmbedding(nn.Module):
+    """Embeds scalar properties into the time-embedding space, or a null token per property.
+
+    Each property is clamped to its range, expanded on ``n_rbf`` Gaussians and passed
+    through a 2-layer MLP; the embeddings of all properties are summed. The last layer
+    of each MLP and the null tokens start at zero, so a freshly initialised
+    conditional model is exactly its unconditional counterpart.
+
+    ``use`` selects, per structure, the property embedding (True) or the learned null
+    token (False): dropping conditions at random during training is what makes a
+    single network both conditional and unconditional, as classifier-free guidance needs.
+    """
+
+    def __init__(self, props: Sequence[str], out_dim: int, n_rbf: int = 64) -> None:
+        super().__init__()
+        unknown = [p for p in props if p not in PROPERTY_RANGES]
+        if unknown:
+            raise ValueError(f"No PROPERTY_RANGES entry for {unknown}")
+        self.props = list(props)
+        lo = torch.tensor([PROPERTY_RANGES[p][0] for p in self.props])
+        hi = torch.tensor([PROPERTY_RANGES[p][1] for p in self.props])
+        self.register_buffer("lo", lo, persistent=False)
+        self.register_buffer("hi", hi, persistent=False)
+        self.register_buffer("centers", torch.linspace(0.0, 1.0, n_rbf), persistent=False)
+        self.gamma = float((n_rbf - 1) ** 2)
+        self.mlps = nn.ModuleList()
+        for _ in self.props:
+            mlp = nn.Sequential(nn.Linear(n_rbf, out_dim), nn.SiLU(), nn.Linear(out_dim, out_dim))
+            nn.init.zeros_(mlp[-1].weight)
+            nn.init.zeros_(mlp[-1].bias)
+            self.mlps.append(mlp)
+        self.null = nn.Parameter(torch.zeros(len(self.props), out_dim))
+
+    def forward(self, values: torch.Tensor, use: torch.Tensor) -> torch.Tensor:
+        """values: (B, P); use: (B,) bool. Returns (B, out_dim)."""
+        u = (values.clamp(self.lo, self.hi) - self.lo) / (self.hi - self.lo)  # (B, P) in [0, 1]
+        rbf = torch.exp(-self.gamma * (u.unsqueeze(-1) - self.centers) ** 2)  # (B, P, n_rbf)
+        out = 0.0
+        for k, mlp in enumerate(self.mlps):
+            out = out + torch.where(use.unsqueeze(-1), mlp(rbf[:, k]), self.null[k])
+        return out
 
 
 class GeoV2CSPLayer(nn.Module):
@@ -177,6 +231,7 @@ class GeoV2CSPNet(nn.Module):
         ln: bool = False,
         dense: bool = False,
         pooling: str = "mean",
+        cond_props: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -244,6 +299,11 @@ class GeoV2CSPNet(nn.Module):
         if self.ln:
             self.final_layer_norm = nn.LayerNorm(hidden_dim)
 
+        self.cond_props = list(cond_props)
+        self.property_embedding = (
+            PropertyEmbedding(self.cond_props, latent_dim) if self.cond_props else None
+        )
+
         self.crystal_family = CrystalFamily()
 
     def forward(
@@ -258,6 +318,8 @@ class GeoV2CSPNet(nn.Module):
         multiplicities: torch.Tensor | None = None,
         dofs: torch.Tensor | None = None,
         site_projectors: torch.Tensor | None = None,
+        props: torch.Tensor | None = None,
+        props_mask: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward denoising step.
@@ -273,6 +335,8 @@ class GeoV2CSPNet(nn.Module):
             multiplicities: (N,) Wyckoff orbit multiplicities (1..192).
             dofs: (N,) site degrees of freedom (0..3).
             site_projectors: Optional (N, 3, 3) site stabilizer tangent space projectors P_j.
+            props: Optional (B, P) values of ``cond_props``; None means unconditional.
+            props_mask: Optional (B,) bool, False where a structure gets the null condition.
 
         Returns:
             Tuple of (lattice_out, coord_out) where lattice_out is (B, 6) and coord_out is (N, 3).
@@ -288,6 +352,14 @@ class GeoV2CSPNet(nn.Module):
             lattice_rep = self.crystal_family.m2v(lattices)
         else:
             raise ValueError(f"Expected lattices to be (B, 6) or (B, 3, 3), got {lattices.shape}")
+
+        if self.property_embedding is not None:
+            if props is None:
+                props = torch.zeros(B, len(self.cond_props), device=t.device)
+                props_mask = torch.zeros(B, dtype=torch.bool, device=t.device)
+            elif props_mask is None:
+                props_mask = torch.ones(B, dtype=torch.bool, device=t.device)
+            t = t + self.property_embedding(props, props_mask)
 
         if spacegroups is None:
             spacegroups = torch.ones(B, dtype=torch.long, device=atom_types.device)

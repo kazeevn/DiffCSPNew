@@ -111,8 +111,15 @@ def generate_structures(
     num_workers: int = 2,
     prefetch_factor: int = 2,
     async_dataloader: bool = True,
+    condition: dict[str, float] | None = None,
+    guidance_scale: float = 1.0,
 ) -> Path:
-    """Generates crystal structures from a Wyckoff file using DiffCSP++."""
+    """Generates crystal structures from a Wyckoff file using DiffCSP++.
+
+    ``condition`` gives a property-conditioned GeoV2 model the value of each of its
+    ``cond_props`` (the same for every structure); ``guidance_scale`` is the
+    classifier-free guidance weight (1 = plain conditional sampling).
+    """
     set_random_seed(42)
     dev = torch.device(device)
     wyckoff_path = Path(wyckoff_file)
@@ -142,10 +149,24 @@ def generate_structures(
     elif model_type == "geov2":
         h = hidden_dim if hidden_dim != 128 else 512
         l = num_layers if num_layers != 2 else 6
+        # Checkpoints since the conditioning work record the architecture themselves.
+        ckpt_file = _resolve_checkpoint(ckpt_path, dev)
+        model_config = {}
+        if ckpt_file.exists():
+            model_config = torch.load(ckpt_file, map_location="cpu", weights_only=False).get("model_config", {})
+        h = model_config.get("hidden_dim", h)
+        l = model_config.get("num_layers", l)
+        cond_props = model_config.get("cond_props", [])
         model = GeoV2Diffusion(
             device=dev,
-            decoder=GeoV2CSPNet(hidden_dim=h, num_layers=l),
+            decoder=GeoV2CSPNet(hidden_dim=h, num_layers=l, cond_props=cond_props),
         ).to(dev)
+        if cond_props:
+            missing = [p for p in cond_props if p not in (condition or {})]
+            if missing:
+                raise ValueError(f"This model is conditioned on {cond_props}: pass --condition for {missing}")
+            cond_values = torch.tensor([[condition[p] for p in cond_props]], dtype=torch.float32, device=dev)
+            print(f"Conditioning on {dict(zip(cond_props, cond_values[0].tolist()))}, guidance scale {guidance_scale}")
     elif model_type == "geo":
         h = hidden_dim if hidden_dim != 128 else 512
         l = num_layers if num_layers != 2 else 6
@@ -160,8 +181,11 @@ def generate_structures(
     ckpt_file = _resolve_checkpoint(ckpt_path, dev)
     if ckpt_file.exists():
         ckpt_data = torch.load(ckpt_file, map_location=dev, weights_only=False)
-        # Check for EMA weights in GeoV2Diffusion
+        # Check for EMA weights in GeoV2Diffusion. The EMA covers the decoder's trainable
+        # weights only, so the full state is loaded first for anything outside it.
         if isinstance(ckpt_data, dict) and "ema_state_dict" in ckpt_data and hasattr(model, "load_ema_state_dict"):
+            if "model_state_dict" in ckpt_data:
+                model.load_state_dict(ckpt_data["model_state_dict"], strict=False)
             model.load_ema_state_dict(ckpt_data["ema_state_dict"], device=dev)
             model.apply_ema()
             print(f"Loaded and applied EMA shadow weights from {ckpt_file}")
@@ -187,7 +211,11 @@ def generate_structures(
     frac_coords_list, num_atoms_list, atom_types_list, lattices_list = [], [], [], []
     for batch in tqdm(test_loader, desc="Generating structures"):
         batch = batch.to(dev, non_blocking=True)
-        outputs, _ = model.sample(batch, disable_progress=True)
+        if model_type == "geov2" and model.cond_props:
+            batch.props = cond_values.expand(batch.num_graphs, -1)
+            outputs, _ = model.sample(batch, disable_progress=True, guidance_scale=guidance_scale)
+        else:
+            outputs, _ = model.sample(batch, disable_progress=True)
         frac_coords_list.append(outputs["frac_coords"].detach().cpu())
         num_atoms_list.append(outputs["num_atoms"].detach().cpu())
         atom_types_list.append(outputs["atom_types"].detach().cpu())
@@ -259,7 +287,16 @@ def main() -> None:
         help="Disable asynchronous PrefetchLoader",
     )
     parser.set_defaults(async_dataloader=True)
+    parser.add_argument(
+        "--condition", nargs="*", default=[], metavar="NAME=VALUE",
+        help="Property values for a conditioned GeoV2 model, e.g. energy_above_hull=0",
+    )
+    parser.add_argument(
+        "--guidance_scale", type=float, default=1.0,
+        help="Classifier-free guidance weight (1 = conditional, 0 = unconditional, >1 = stronger)",
+    )
     args = parser.parse_args()
+    condition = {k: float(v) for k, v in (c.split("=", 1) for c in args.condition)}
 
     generate_structures(
         wyckoff_file=args.wyckoff_file,
@@ -276,6 +313,8 @@ def main() -> None:
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         async_dataloader=args.async_dataloader,
+        condition=condition,
+        guidance_scale=args.guidance_scale,
     )
 
 
